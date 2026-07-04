@@ -1,0 +1,42 @@
+# Build output
+bin/
+obj/
+Build/
+Output/
+Payload/
+*.exe
+*.dll
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+*.zip
+
+# Local runtime and user data
+core/
+state.json
+servers.json
+client-api.json
+xray-config.json
+*.log
+logs/
+runtime/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+deploy_ed25519*
+
+# Editors and OS
+.idea/
+.vscode/
+.vs/
+.DS_Store
+Thumbs.db
+desktop.ini
+
