@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference='Stop'
 $KitRoot=$PSScriptRoot
 $PayloadRoot=Join-Path $KitRoot 'Payload'
-$Template=Join-Path $KitRoot 'PackageSource\AppxManifest.template.xml'
+$Template=Join-Path $KitRoot 'AppxManifest.template.xml'
 $Assets=Join-Path $KitRoot 'Assets'
 $BuildRoot=Join-Path $KitRoot 'Build'
 $OutputRoot=Join-Path $KitRoot 'Output'
@@ -46,7 +46,7 @@ foreach($architecture in @('x64','x86')){
     Copy-Item $Assets (Join-Path $staging 'Assets') -Recurse -Force
     $manifest=$manifestTemplate.Replace('__PACKAGE_NAME__',$PackageName).Replace('__PUBLISHER__',$Publisher).Replace('__PUBLISHER_DISPLAY_NAME__',$PublisherDisplayName).Replace('__ARCHITECTURE__',$architecture)
     [IO.File]::WriteAllText((Join-Path $staging 'AppxManifest.xml'),$manifest,(New-Object Text.UTF8Encoding($false)))
-    $package=Join-Path $OutputRoot "Luna_1.3.1.0_$architecture.msix"
+    $package=Join-Path $OutputRoot "Luna_1.3.2.0_$architecture.msix"
     & $MakeAppxPath pack /d $staging /p $package /o
     if($LASTEXITCODE -ne 0){throw "MakeAppx pack завершился с кодом $LASTEXITCODE"}
     $packages+=$package
@@ -55,7 +55,7 @@ foreach($architecture in @('x64','x86')){
 $bundleInput=Join-Path $BuildRoot 'BundleInput'
 New-Item -ItemType Directory -Path $bundleInput|Out-Null
 foreach($package in $packages){Copy-Item $package $bundleInput}
-$bundle=Join-Path $OutputRoot 'Luna_1.3.1.0.msixbundle'
+$bundle=Join-Path $OutputRoot 'Luna_1.3.2.0.msixbundle'
 & $MakeAppxPath bundle /d $bundleInput /p $bundle /o
 if($LASTEXITCODE -ne 0){throw "MakeAppx bundle завершился с кодом $LASTEXITCODE"}
 

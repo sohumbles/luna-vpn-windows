@@ -1,5 +1,5 @@
-﻿# Luna 1.3.1-release — Windows 10/11 proxy/VPN client
-# Luna 1.3.1-release build with route-quality diagnostics.
+# Luna 1.3.2-release — Windows 10/11 proxy/VPN client
+# Luna 1.3.2-release build with route-quality diagnostics.
 [CmdletBinding()]
 param()
 
@@ -1112,7 +1112,7 @@ public static class LunaTrafficMeter
 }
 '@ -ReferencedAssemblies 'System.Net.Http.dll'
 
-$AppVersion = '1.3.1-release'
+$AppVersion = '1.3.2-release'
 $AppRoot = Join-Path $env:LOCALAPPDATA 'Luna'
 $LegacyRoot = Join-Path $env:LOCALAPPDATA 'LumaTunnel'
 $CoreDir = Join-Path $AppRoot 'core'
@@ -1143,7 +1143,7 @@ $defaultState = @{
         directDomains='localhost,*.local'; blockDomains='';language='Русский';theme='Темная'
         autoConnect=$false;killSwitch=$false;dnsProtection=$false;enableIPv6=$false
         webRtcProtection=$false;dnsLeakProtection=$false;checkUpdates=$true;anonymousStats=$false
-        telemetryConsentAsked=$false
+        telemetryConsentAsked=$false;latencyAutoRefresh=$false
         engine='Xray-core';splitApps=@()
     }
 }
@@ -1209,6 +1209,10 @@ $script:CoreProcess = $null
 $script:ConnectedAt = $null
 $script:LatencyHistory = New-Object Collections.ArrayList
 $script:PingTask = $null
+$script:SelectedPingTask = $null
+$script:SelectedPingProfileId = ''
+$script:SelectedPingButton = $null
+$script:LatencyLastCheckedAt = $null
 $script:RefreshingProfiles = $false
 $script:SettingsDirty = $false
 $script:LogFollow = $true
@@ -1649,7 +1653,7 @@ $xamlText=@'
     <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"><StackPanel>
      <Image Name="BrandIcon" Width="76" Height="76" HorizontalAlignment="Left" Stretch="UniformToFill" Margin="0,0,0,10"/>
      <TextBlock Text="Luna" FontSize="29" FontWeight="SemiBold" Foreground="#FFFFFF"/>
-     <TextBlock Text="VPN · 1.3.1-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
+     <TextBlock Text="VPN · 1.3.2-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
      <Button Name="NavHome" Content="◉  Подключение" HorizontalContentAlignment="Left"/>
      <Button Name="NavServers" Content="◫  Серверы" HorizontalContentAlignment="Left"/>
      <Button Name="NavSubs" Content="↻  Подписки" HorizontalContentAlignment="Left"/>
@@ -1671,57 +1675,32 @@ $xamlText=@'
   </Border>
   <Grid Grid.Column="1" Margin="26">
    <Grid.Background><RadialGradientBrush Center="0.52,0.42" GradientOrigin="0.52,0.42" RadiusX="0.8" RadiusY="0.8"><GradientStop Color="#171348" Offset="0"/><GradientStop Color="#090B24" Offset="0.52"/><GradientStop Color="#050719" Offset="1"/></RadialGradientBrush></Grid.Background>
-   <ScrollViewer Name="HomePage" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel><Grid MinHeight="720">
+   <Grid Name="HomePage">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <StackPanel><TextBlock Text="LUNA · ЗАЩИЩЁННОЕ СОЕДИНЕНИЕ" FontSize="12" Foreground="#BCAEFF"/><TextBlock Text="Ваш маршрут к свободной сети" FontSize="30" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
-    <StackPanel Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Width="430">
-     <Grid Width="250" Height="250"><Ellipse Name="WaveRing" Width="210" Height="210" Stroke="#9A7BFF" StrokeThickness="3" Opacity="0" HorizontalAlignment="Center" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5"><Ellipse.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Ellipse.RenderTransform></Ellipse><Button Name="ConnectButton" Width="210" Height="210" Style="{StaticResource CircleButtonStyle}"><StackPanel HorizontalAlignment="Center"><TextBlock Name="ConnectLabel" Text="ПОДКЛЮЧИТЬ" FontSize="17" FontWeight="Bold" HorizontalAlignment="Center"/><TextBlock Name="SessionTime" Text="00:00:00" FontSize="14" Foreground="#C9C5FF" HorizontalAlignment="Center" Margin="0,9,0,0"/></StackPanel></Button></Grid>
-     <TextBlock Name="ConnectionStatus" Text="Нет подключения" HorizontalAlignment="Center" FontSize="18" Margin="0,24,0,5"/>
-     <TextBlock Name="SelectedServer" Text="Выберите сервер" HorizontalAlignment="Center" Foreground="#B8BDD2"/>
-     <ComboBox Name="QuickServer" Width="420" Margin="0,18,0,0"/>
-    </StackPanel>
-    <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-     <Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="12"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="105"/><RowDefinition Height="18"/><RowDefinition Height="32"/></Grid.RowDefinitions><DockPanel Margin="6,0,4,5"><TextBlock Text="TCP VPN · 60 СЕК" ToolTip="Фактическое время TCP-подключения до выбранного VPN-сервера" Foreground="#C4C8DC" FontSize="11" Margin="4,0,0,0"/><StackPanel Orientation="Horizontal" DockPanel.Dock="Right"><TextBlock Text="Джиттер: " Foreground="#949AB8"/><TextBlock Name="JitterLabel" Text="—" Foreground="#D7C8FF"/><TextBlock Text="   Потери: " Foreground="#949AB8"/><TextBlock Name="PacketLossLabel" Text="0%" Foreground="#65E6A7"/><TextBlock Name="GraphValue" Text="—" Foreground="#D7C8FF" FontWeight="SemiBold" Margin="14,0,0,0"/></StackPanel></DockPanel><Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="42"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Stretch"><StackPanel.Resources><Style TargetType="TextBlock"><Setter Property="FontSize" Value="9"/><Setter Property="Foreground" Value="#7F86A5"/></Style></StackPanel.Resources><TextBlock Text="999ms"/><TextBlock Text="700ms" Margin="0,6,0,0"/><TextBlock Text="500ms" Margin="0,6,0,0"/><TextBlock Text="300ms" Margin="0,6,0,0"/><TextBlock Text="100ms" Margin="0,6,0,0"/><TextBlock Text="50ms" Margin="0,6,0,0"/><TextBlock Text="0ms" Margin="0,5,0,0"/></StackPanel><Canvas Name="LatencyCanvas" Grid.Column="1" ClipToBounds="True" Background="#080B24"/></Grid><Grid Grid.Row="2" Margin="42,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="-60" Foreground="#747B9A" FontSize="9"/><TextBlock Grid.Column="1" Text="-45" Foreground="#747B9A" FontSize="9" HorizontalAlignment="Center"/><TextBlock Grid.Column="2" Text="-30" Foreground="#747B9A" FontSize="9" HorizontalAlignment="Center"/><TextBlock Grid.Column="3" Text="-15" Foreground="#747B9A" FontSize="9" HorizontalAlignment="Center"/><TextBlock Grid.Column="4" Text="Сейчас" Foreground="#AFA5D8" FontSize="9" HorizontalAlignment="Right"/></Grid><Grid Grid.Row="3"><Grid.ColumnDefinitions><ColumnDefinition Width="42"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="Потери" Foreground="#7F86A5" FontSize="9" VerticalAlignment="Center"/><Canvas Name="LossCanvas" Grid.Column="1" Background="#080B24" ClipToBounds="True"/></Grid></Grid></Border>
-     <Border Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="15"><StackPanel><TextBlock Text="РЕЖИМ" Foreground="#C4C8DC"/><TextBlock Name="ModeLabel" Text="System proxy" FontSize="20"/><Border Height="1" Background="#292B63" Margin="0,12,0,10"/><TextBlock Text="ТРАФИК ЧЕРЕЗ LUNA" Foreground="#C4C8DC" FontSize="11"/><TextBlock Name="HomeUpSpeed" Text="↑ 0 Mbps" Foreground="#65E6A7" FontSize="15"/><TextBlock Name="HomeDownSpeed" Text="↓ 0 Mbps" Foreground="#FF6B7A" FontSize="15"/></StackPanel></Border>
-     <Border Grid.Column="2" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="15"><StackPanel><TextBlock Text="ТЕКУЩАЯ ЗАДЕРЖКА" ToolTip="Фактическое время TCP-подключения до выбранного VPN-сервера" Foreground="#C4C8DC"/><TextBlock Name="LatencyLabel" Text="—" FontSize="20"/></StackPanel></Border>
+    <Grid Grid.Row="1" Margin="0,18,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="350"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+     <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top" Width="320" Margin="8,0,0,0">
+      <Grid Width="250" Height="250"><Ellipse Name="WaveRing" Width="210" Height="210" Stroke="#9A7BFF" StrokeThickness="3" Opacity="0" HorizontalAlignment="Center" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5"><Ellipse.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Ellipse.RenderTransform></Ellipse><Button Name="ConnectButton" Width="210" Height="210" Style="{StaticResource CircleButtonStyle}"><StackPanel HorizontalAlignment="Center"><TextBlock Name="ConnectLabel" Text="ПОДКЛЮЧИТЬ" FontSize="17" FontWeight="Bold" HorizontalAlignment="Center"/><TextBlock Name="SessionTime" Text="00:00:00" FontSize="14" Foreground="#C9C5FF" HorizontalAlignment="Center" Margin="0,9,0,0"/></StackPanel></Button></Grid>
+      <TextBlock Name="ConnectionStatus" Text="Нет подключения" HorizontalAlignment="Center" FontSize="18" Margin="0,16,0,5"/>
+      <TextBlock Name="SelectedServer" Text="Выберите сервер справа" HorizontalAlignment="Center" Foreground="#B8BDD2" TextTrimming="CharacterEllipsis" MaxWidth="310"/>
+      <ComboBox Name="QuickServer" Visibility="Collapsed"/>
+     </StackPanel>
+     <Border Grid.Column="1" Background="#0D102E" BorderBrush="#292B63" BorderThickness="1" CornerRadius="16" Padding="14" Margin="12,0,0,0">
+      <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+       <DockPanel Margin="4,0,4,10"><StackPanel><TextBlock Text="СЕРВЕРЫ" Foreground="#C4C8DC" FontWeight="SemiBold"/><TextBlock Text="Выберите сервер или проверьте задержку" Foreground="#8F96B5" FontSize="11"/></StackPanel><Button Name="HomePingAllButton" Content="⚡ Пинг всех" DockPanel.Dock="Right" VerticalAlignment="Center"/></DockPanel>
+       <ListBox Name="HomeServerList" Grid.Row="1" Background="Transparent" BorderThickness="0" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True">
+        <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Foreground" Value="#F5F6FF"/><Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="0,2"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem"><Border Name="ServerRow" Background="#11152F" BorderBrush="#24295C" BorderThickness="1" CornerRadius="10" Padding="11,8"><ContentPresenter/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ServerRow" Property="Background" Value="#202052"/><Setter TargetName="ServerRow" Property="BorderBrush" Value="#7567FF"/></Trigger><Trigger Property="IsSelected" Value="True"><Setter TargetName="ServerRow" Property="Background" Value="#342B72"/><Setter TargetName="ServerRow" Property="BorderBrush" Value="#A89FFF"/><Setter Property="FontWeight" Value="SemiBold"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style></ListBox.ItemContainerStyle>
+        <ListBox.ItemTemplate><DataTemplate><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/><ColumnDefinition Width="42"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{Binding name}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding protocol}" Foreground="#9DA5C4" FontSize="11"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding latency}" Foreground="#CDBFFF" VerticalAlignment="Center" HorizontalAlignment="Right"/><Button Grid.Column="2" Content="↻" Tag="{Binding id}" ToolTip="Проверить этот сервер" Width="34" Height="30" Padding="0" Margin="8,0,0,0"/></Grid></DataTemplate></ListBox.ItemTemplate>
+       </ListBox>
+      </Grid>
+     </Border>
     </Grid>
+    <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="1.35*"/><ColumnDefinition/></Grid.ColumnDefinitions>
+     <Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><StackPanel><TextBlock Text="РЕЖИМ" Foreground="#C4C8DC"/><ComboBox Name="HomeModeBox" Margin="0,5,0,0"><ComboBoxItem Content="System proxy"/><ComboBoxItem Content="TUN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="ModeLabel" Text="System proxy" Visibility="Collapsed"/></StackPanel></Border>
+     <Border Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="ЗАДЕРЖКА ВЫБРАННОГО СЕРВЕРА" Foreground="#C4C8DC"/><TextBlock Name="LatencyServerName" Text="Сервер не выбран" Foreground="#9EA5C2" FontSize="11"/><TextBlock Name="LatencyLabel" Text="—" FontSize="20"/><TextBlock Name="LatencyLastCheckedHome" Text="Последняя проверка: ещё не выполнялась" Foreground="#949AB8" FontSize="11"/><CheckBox Name="LatencyAutoRefresh" Content="Автообновление каждые 0,67 секунды" Margin="4,6,0,0"/></StackPanel><Button Name="LatencyRefreshHome" Grid.Column="1" Content="Обновить" VerticalAlignment="Center"/></Grid></Border>
+     <Border Grid.Column="2" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><StackPanel><TextBlock Text="СКОРОСТЬ" Foreground="#C4C8DC"/><TextBlock Name="HomeUpSpeed" Text="↑ 0 Mbps" Foreground="#65E6A7" FontSize="15"/><TextBlock Name="HomeDownSpeed" Text="↓ 0 Mbps" Foreground="#FF6B7A" FontSize="15"/></StackPanel></Border>
     </Grid>
-    <Border Name="RouteQualityCard" Background="#101333" BorderBrush="#4B4295" BorderThickness="1" CornerRadius="14" Margin="5,18,5,26" Padding="18">
-     <Grid>
-      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-      <DockPanel>
-       <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
-        <Button Name="RouteBaselineButton" Content="Проверить до подключения" Padding="13,8" ToolTip="Короткая HTTPS-проверка напрямую, без системного прокси Luna"/>
-        <Button Name="RouteCheckButton" Content="↻ Проверить" Padding="13,8" IsEnabled="False" ToolTip="Проверить сервисы через текущий VPN-маршрут"/>
-       </StackPanel>
-       <StackPanel>
-        <TextBlock Text="Качество маршрута" FontSize="21" FontWeight="SemiBold"/>
-        <TextBlock Text="DNS → TCP → TLS → HTTP → проверка ответа; не speedtest" Foreground="#9EA6C4" FontSize="12" Margin="0,4,0,0"/>
-       </StackPanel>
-      </DockPanel>
-      <TextBlock Name="RouteDisconnectedMessage" Grid.Row="1" Text="Подключитесь к VPN, чтобы проверить маршрут до сервисов." Foreground="#C9C5FF" Margin="0,13,0,3"/>
-      <TextBlock Name="RouteComparisonSummary" Grid.Row="2" Text="Сначала можно проверить маршрут без VPN, затем подключиться и сравнить." Foreground="#AEB4CC" Margin="0,3,0,11" TextWrapping="Wrap"/>
-      <ItemsControl Name="RouteQualityList" Grid.Row="3">
-       <ItemsControl.ItemTemplate>
-        <DataTemplate>
-         <Border Background="#0B0E29" BorderBrush="#252A5B" BorderThickness="1" CornerRadius="9" Padding="11,9" Margin="0,3">
-          <Grid>
-           <Grid.ColumnDefinitions><ColumnDefinition Width="1.25*"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="2.2*"/></Grid.ColumnDefinitions>
-           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-           <TextBlock Text="{Binding Service}" FontWeight="SemiBold" VerticalAlignment="Center"/>
-           <StackPanel Grid.Column="1"><TextBlock Text="БЕЗ VPN" FontSize="9" Foreground="#7F86A5"/><TextBlock Text="{Binding DirectLatencyText}" Foreground="#D8D3FF"/></StackPanel>
-           <StackPanel Grid.Column="2"><TextBlock Text="ЧЕРЕЗ VPN" FontSize="9" Foreground="#7F86A5"/><TextBlock Text="{Binding VpnLatencyText}" Foreground="#D8D3FF"/></StackPanel>
-           <Border Grid.Column="3" Background="#171B42" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="{Binding Status}" Foreground="{Binding StatusColor}" FontWeight="SemiBold"/></Border>
-           <TextBlock Grid.Column="4" Text="{Binding Detail}" Foreground="#AEB4CC" TextWrapping="Wrap" VerticalAlignment="Center"/>
-           <TextBlock Grid.Row="1" Grid.Column="4" Text="{Binding CheckedAtText}" Foreground="#747B9A" FontSize="10" Margin="0,3,0,0"/>
-          </Grid>
-         </Border>
-        </DataTemplate>
-       </ItemsControl.ItemTemplate>
-      </ItemsControl>
-     </Grid>
-    </Border>
-    </StackPanel></ScrollViewer>
+   </Grid>
    <Grid Name="ServersPage" Visibility="Collapsed">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <DockPanel><TextBlock Text="Серверы" FontSize="30" FontWeight="SemiBold"/><StackPanel Orientation="Horizontal" DockPanel.Dock="Right"><Button Name="RefreshBackendButton" Content="↻ Сервис Luna"/><Button Name="ImportClipboard" Content="Из буфера"/><Button Name="AddLink" Content="+ Добавить"/></StackPanel></DockPanel>
@@ -1749,7 +1728,7 @@ $xamlText=@'
     </StackPanel>
    </Grid>
    <Grid Name="LogsPage" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Журнал" FontSize="30" FontWeight="SemiBold"/><StackPanel Grid.Row="1" Orientation="Horizontal"><ComboBox Name="LogFilter" Width="130"><ComboBoxItem Content="Все"/><ComboBoxItem Content="INFO"/><ComboBoxItem Content="WARN"/><ComboBoxItem Content="ERROR"/></ComboBox><TextBox Name="LogSearch" Width="330" ToolTip="Поиск в журнале"/></StackPanel><RichTextBox Name="LogView" Grid.Row="2" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Background="#0B0E29" Foreground="#EDEEFF" BorderThickness="0" FontFamily="Consolas"/><StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right"><Button Name="LiveLogButton" Content="Смотреть реал.тайм" Visibility="Collapsed"/><Button Name="ExportLogs" Content="Экспорт"/><Button Name="ClearLogs" Content="Очистить"/></StackPanel></Grid>
-   <Grid Name="StatsPage" Visibility="Collapsed"><StackPanel>
+   <Grid Name="StatsPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel>
     <TextBlock Text="Статистика" FontSize="30" FontWeight="SemiBold"/>
     <TextBlock Text="Показатели Luna и всего устройства разделены — значения не смешиваются" Foreground="#9EA5C2" Margin="0,4,0,18"/>
     <WrapPanel>
@@ -1758,7 +1737,23 @@ $xamlText=@'
      <Border Background="#101333" CornerRadius="14" Padding="18" Width="300" Margin="5"><StackPanel><TextBlock Text="ВЕСЬ ТРАФИК УСТРОЙСТВА" Foreground="#AEB4CC"/><StackPanel Orientation="Horizontal"><TextBlock Name="SystemUpSpeed" Text="↑ 0 Mbps" Foreground="#65E6A7" FontSize="19" Margin="0,0,12,0"/><TextBlock Name="SystemDownSpeed" Text="↓ 0 Mbps" Foreground="#FF6B7A" FontSize="19"/></StackPanel><TextBlock Name="SystemTrafficTotal" Text="За время работы Luna: ↓ 0 Б · ↑ 0 Б" Foreground="#9EA5C2" FontSize="11" Margin="0,7,0,0"/></StackPanel></Border>
     </WrapPanel>
     <Border Background="#101333" CornerRadius="14" Padding="18" Margin="5,18,5,5"><StackPanel><TextBlock Name="StatIPv4" Text="Публичный IPv4: определяется через соединение Luna"/><TextBlock Name="StatCountry" Text="Страна: —"/><TextBlock Name="StatProvider" Text="Провайдер: определяется через соединение Luna"/><TextBlock Name="StatEncryption" Text="Шифрование: —"/></StackPanel></Border>
-   </StackPanel></Grid>
+       <Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5,18,5,5" Padding="12">
+     <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="150"/><RowDefinition Height="34"/></Grid.RowDefinitions><DockPanel Margin="6,0,4,8"><TextBlock Text="TCP VPN · 60 СЕК" Foreground="#C4C8DC"/><StackPanel Orientation="Horizontal" DockPanel.Dock="Right"><TextBlock Text="Джиттер: " Foreground="#949AB8"/><TextBlock Name="JitterLabel" Text="—" Foreground="#D7C8FF"/><TextBlock Text="   Потери: " Foreground="#949AB8"/><TextBlock Name="PacketLossLabel" Text="0%" Foreground="#65E6A7"/><TextBlock Name="GraphValue" Text="—" Foreground="#D7C8FF" FontWeight="SemiBold" Margin="14,0,0,0"/></StackPanel></DockPanel><Canvas Name="LatencyCanvas" Grid.Row="1" ClipToBounds="True" Background="#080B24"/><Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="Потери" Foreground="#7F86A5" VerticalAlignment="Center"/><Canvas Name="LossCanvas" Grid.Column="1" Background="#080B24" ClipToBounds="True"/></Grid></Grid>
+    </Border>
+    <Border Name="RouteQualityCard" Background="#101333" BorderBrush="#4B4295" BorderThickness="1" CornerRadius="14" Margin="5,18,5,26" Padding="18">
+     <Grid>
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <DockPanel>
+       <StackPanel Orientation="Horizontal" DockPanel.Dock="Right"><Button Name="RouteBaselineButton" Content="Проверить до подключения" Padding="13,8" ToolTip="Короткая HTTPS-проверка напрямую, без системного прокси Luna"/><Button Name="RouteCheckButton" Content="↻ Проверить" Padding="13,8" IsEnabled="False" ToolTip="Проверить сервисы через текущий VPN-маршрут"/></StackPanel>
+       <StackPanel><TextBlock Text="Качество маршрута" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="DNS → TCP → TLS → HTTP → проверка ответа; не speedtest" Foreground="#9EA6C4" FontSize="12" Margin="0,4,0,0"/></StackPanel>
+      </DockPanel>
+      <TextBlock Name="RouteDisconnectedMessage" Grid.Row="1" Text="Подключитесь к VPN, чтобы проверить маршрут до сервисов." Foreground="#C9C5FF" Margin="0,13,0,3"/>
+      <TextBlock Name="RouteComparisonSummary" Grid.Row="2" Text="Сначала можно проверить маршрут без VPN, затем подключиться и сравнить." Foreground="#AEB4CC" Margin="0,3,0,11" TextWrapping="Wrap"/>
+      <ItemsControl Name="RouteQualityList" Grid.Row="3">
+       <ItemsControl.ItemTemplate><DataTemplate><Border Background="#0B0E29" BorderBrush="#252A5B" BorderThickness="1" CornerRadius="9" Padding="11,9" Margin="0,3"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="1.25*"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="1.05*"/><ColumnDefinition Width="2.2*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="{Binding Service}" FontWeight="SemiBold"/><StackPanel Grid.Column="1"><TextBlock Text="БЕЗ VPN" FontSize="9" Foreground="#7F86A5"/><TextBlock Text="{Binding DirectLatencyText}" Foreground="#D8D3FF"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="ЧЕРЕЗ VPN" FontSize="9" Foreground="#7F86A5"/><TextBlock Text="{Binding VpnLatencyText}" Foreground="#D8D3FF"/></StackPanel><Border Grid.Column="3" Background="#171B42" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="{Binding Status}" Foreground="{Binding StatusColor}" FontWeight="SemiBold"/></Border><TextBlock Grid.Column="4" Text="{Binding Detail}" Foreground="#AEB4CC" TextWrapping="Wrap"/><TextBlock Grid.Row="1" Grid.Column="4" Text="{Binding CheckedAtText}" Foreground="#747B9A" FontSize="10" Margin="0,3,0,0"/></Grid></Border></DataTemplate></ItemsControl.ItemTemplate>
+      </ItemsControl>
+     </Grid>
+    </Border>   </StackPanel></ScrollViewer></Grid>
    <Grid Name="SplitPage" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Split Tunneling · В разработке" FontSize="30" FontWeight="SemiBold"/><Border Grid.Row="1" Background="#302B63" CornerRadius="10" Padding="12" Margin="4,8,4,14"><TextBlock Text="Функция появится в следующих обновлениях. Пока можно подготовить список приложений, но исключения из VPN ещё не применяются." TextWrapping="Wrap" Foreground="#FFD166"/></Border><ListBox Name="SplitAppList" Grid.Row="2" Background="#0B0E29" Foreground="#F4F5FF"/><StackPanel Grid.Row="3" Orientation="Horizontal"><Button Name="AddSplitApp" Content="+ Добавить приложение"/><Button Name="RemoveSplitApp" Content="Удалить"/></StackPanel></Grid>
    <Grid Name="AppsPage" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><StackPanel><TextBlock Text="Трафик по приложениям" FontSize="30" FontWeight="SemiBold"/><TextBlock Name="AppsSummary" Text="Ожидаем трафик приложений через Luna…" Foreground="#9EA5C2" Margin="0,5,0,16"/></StackPanel><Border Grid.Row="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="10"><ListView Name="AppsTraffic"><ListView.View><GridView><GridViewColumn Header="Приложение" DisplayMemberBinding="{Binding name}" Width="230"/><GridViewColumn Header="PID" DisplayMemberBinding="{Binding pid}" Width="80"/><GridViewColumn Header="Получено" DisplayMemberBinding="{Binding received}" Width="125"/><GridViewColumn Header="Отправлено" DisplayMemberBinding="{Binding sent}" Width="125"/><GridViewColumn Header="Всего" DisplayMemberBinding="{Binding total}" Width="125"/><GridViewColumn Header="Активные соединения" DisplayMemberBinding="{Binding connections}" Width="165"/></GridView></ListView.View></ListView></Border></Grid>
    <Grid Name="SettingsPage" Visibility="Collapsed">
@@ -1775,7 +1770,7 @@ $xamlText=@'
     </StackPanel></ScrollViewer>
    </Grid>
    <Grid Name="ExpertsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="Для экспертов" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Сейчас полностью поддерживается только Xray-core. Остальные движки появятся в следующих обновлениях." TextWrapping="Wrap" Foreground="#FFD166" Margin="4,8,0,18"/><TextBlock Text="Сетевой движок"/><ComboBox Name="EngineBox" Width="390" HorizontalAlignment="Left"><ComboBoxItem Content="Xray-core"/><ComboBoxItem Content="Sing-box — в разработке" IsEnabled="False"/><ComboBoxItem Content="Clash Meta — в разработке" IsEnabled="False"/><ComboBoxItem Content="Hysteria2 — в разработке" IsEnabled="False"/><ComboBoxItem Content="WireGuard — в разработке" IsEnabled="False"/><ComboBoxItem Content="OpenVPN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="EngineStatus" Text="● Xray-core установлен" Foreground="#65E6A7" Margin="5,8"/><Button Name="ResetSettings" Content="Сбросить все настройки" Width="220" HorizontalAlignment="Left" Margin="0,25,0,0"/></StackPanel></Grid>
-   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.3.1-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
+   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.3.2-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
    <Border Name="LoadingOverlay" Panel.ZIndex="50" Background="#D90B0D16" CornerRadius="14" Visibility="Collapsed">
     <StackPanel Width="360" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Name="LoadingText" Text="Загрузка…" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,14"/><ProgressBar Height="7" IsIndeterminate="True" Foreground="#8C7CFF" Background="#262A43"/></StackPanel>
    </Border>
@@ -1832,9 +1827,12 @@ if($State.settings.language -eq 'English'){
         'Сохранить'='Save';'Запускать вместе с Windows'='Start with Windows';'Сворачивать в трей'='Minimize to tray'
         'Автоподключение'='Auto-connect';'Защита DNS'='DNS protection';'Блокировать утечки DNS'='Block DNS leaks'
         'Проверять обновления'='Check for updates';'Отправлять анонимную статистику'='Send anonymous statistics'
-        'Экспорт'='Export';'Очистить'='Clear';'Смотреть реал.тайм'='Watch live';'Русский'='Russian'
+        'Экспорт'='Export';'Очистить'='Clear';'Смотреть реал.тайм'='Watch live';'Русский'='Russian';'Авто'='Auto'
+        'ЗАДЕРЖКА ВЫБРАННОГО СЕРВЕРА'='SELECTED SERVER LATENCY';'Выберите сервер или проверьте задержку'='Select a server or check latency'
+        'Автообновление каждые 0,67 секунды'='Auto-refresh every 0.67 seconds';'Последняя проверка: ещё не выполнялась'='Last check: not run yet'
+        'Сервер не выбран'='No server selected';'Обновить'='Refresh';'Пинг всех'='Ping all';'Требуется перезапуск приложения Luna'='Luna restart required'
     }
-    foreach($entry in $languageMap.GetEnumerator()){$xamlText=$xamlText.Replace($entry.Key,$entry.Value)}
+    foreach($entry in @($languageMap.GetEnumerator()|Sort-Object {$_.Key.Length} -Descending)){$xamlText=$xamlText.Replace($entry.Key,$entry.Value)}
 }
 [xml]$xaml=$xamlText
 $reader=New-Object System.Xml.XmlNodeReader $xaml
@@ -1872,7 +1870,7 @@ $Window.Add_SourceInitialized({
     $enabled=1
     [void][LunaDwm]::DwmSetWindowAttribute($handle,20,[ref]$enabled,4)
 })
-$names=@('HomePage','ServersPage','SubsPage','RoutesPage','LogsPage','StatsPage','SplitPage','AppsPage','SettingsPage','ExpertsPage','AboutPage','BrandIcon','AboutIcon','BackendStatusText','UpdateStatusText','LatestNewsText','ChangelogStatusText','NavHome','NavServers','NavSubs','NavRoutes','NavLogs','NavStats','NavSplit','NavApps','NavSettings','NavExperts','NavAbout','CoreStatus','ProtectionDetail','ConnectButton','ConnectLabel','WaveRing','ConnectionStatus','SelectedServer','QuickServer','SessionTime','ModeLabel','HomeUpSpeed','HomeDownSpeed','LatencyLabel','GraphValue','JitterLabel','PacketLossLabel','LatencyCanvas','LossCanvas','RouteQualityCard','RouteBaselineButton','RouteCheckButton','RouteDisconnectedMessage','RouteComparisonSummary','RouteQualityList','LoadingOverlay','LoadingText','ToastPanel','ToastTitle','ToastMessage','CloseToast','FixButton','ServerList','ServerLoadStatus','SearchBox','RefreshBackendButton','ImportClipboard','AddLink','PingAllButton','PingButton','DeleteServer','SubscriptionUrl','AddSubscription','UpdateSubscriptions','SubscriptionList','DeleteSubscription','DirectDomains','BlockDomains','BypassLan','BlockAds','SaveRoutes','LogView','LogFilter','LogSearch','LiveLogButton','ExportLogs','ClearLogs','UpSpeed','DownSpeed','ReceivedTotal','SentTotal','SystemUpSpeed','SystemDownSpeed','SystemTrafficTotal','StatIPv4','StatCountry','StatProvider','StatEncryption','SplitAppList','AddSplitApp','RemoveSplitApp','LanguageBox','ThemeBox','ModeBox','PortBox','DnsBox','AutoStart','StartMinimized','AutoConnect','KillSwitch','DnsProtection','EnableIPv6','WebRtcProtection','DnsLeakProtection','CheckUpdates','AnonymousStats','SaveSettings','InstallCore','EngineBox','EngineStatus','ResetSettings')
+$names=@('HomePage','ServersPage','SubsPage','RoutesPage','LogsPage','StatsPage','SplitPage','AppsPage','SettingsPage','ExpertsPage','AboutPage','BrandIcon','AboutIcon','BackendStatusText','UpdateStatusText','LatestNewsText','ChangelogStatusText','NavHome','NavServers','NavSubs','NavRoutes','NavLogs','NavStats','NavSplit','NavApps','NavSettings','NavExperts','NavAbout','CoreStatus','ProtectionDetail','ConnectButton','ConnectLabel','WaveRing','ConnectionStatus','SelectedServer','QuickServer','HomeServerList','HomePingAllButton','HomeModeBox','SessionTime','ModeLabel','HomeUpSpeed','HomeDownSpeed','LatencyLabel','LatencyServerName','LatencyLastCheckedHome','LatencyRefreshHome','LatencyAutoRefresh','GraphValue','JitterLabel','PacketLossLabel','LatencyCanvas','LossCanvas','RouteQualityCard','RouteBaselineButton','RouteCheckButton','RouteDisconnectedMessage','RouteComparisonSummary','RouteQualityList','LoadingOverlay','LoadingText','ToastPanel','ToastTitle','ToastMessage','CloseToast','FixButton','ServerList','ServerLoadStatus','SearchBox','RefreshBackendButton','ImportClipboard','AddLink','PingAllButton','PingButton','DeleteServer','SubscriptionUrl','AddSubscription','UpdateSubscriptions','SubscriptionList','DeleteSubscription','DirectDomains','BlockDomains','BypassLan','BlockAds','SaveRoutes','LogView','LogFilter','LogSearch','LiveLogButton','ExportLogs','ClearLogs','UpSpeed','DownSpeed','ReceivedTotal','SentTotal','SystemUpSpeed','SystemDownSpeed','SystemTrafficTotal','StatIPv4','StatCountry','StatProvider','StatEncryption','SplitAppList','AddSplitApp','RemoveSplitApp','LanguageBox','ThemeBox','ModeBox','PortBox','DnsBox','AutoStart','StartMinimized','AutoConnect','KillSwitch','DnsProtection','EnableIPv6','WebRtcProtection','DnsLeakProtection','CheckUpdates','AnonymousStats','SaveSettings','InstallCore','EngineBox','EngineStatus','ResetSettings')
 foreach($n in $names){Set-Variable -Scope Script -Name $n -Value $Window.FindName($n)}
 $script:AppsTraffic=$Window.FindName('AppsTraffic')
 $script:AppsSummary=$Window.FindName('AppsSummary')
@@ -1919,12 +1917,13 @@ function Refresh-Profiles {
         $filter=$SearchBox.Text.ToLowerInvariant()
         $rows=@($State.profiles|?{"$($_.name) $($_.host) $($_.protocol) $($_.country) $($_.city)".ToLowerInvariant().Contains($filter)}|%{[pscustomobject]@{id=$_.id;name=$_.name;location=(@($_.country,$_.city)|?{$_}) -join ', ';protocol=$_.protocol.ToUpper();endpoint="$($_.host):$($_.port)";status=(Get-Or $_.healthStatus (Get-Or $_.status 'Не проверен'));latency=$_.latency}})
         $ServerList.ItemsSource=$rows
+        $HomeServerList.ItemsSource=$rows
         $QuickServer.Items.Clear()
         foreach($p in $State.profiles){[void]$QuickServer.Items.Add("$($p.name)  ·  $($p.protocol.ToUpper())")}
         $idx=0; for($i=0;$i -lt $State.profiles.Count;$i++){if($State.profiles[$i].id -eq $State.selectedId){$idx=$i}}
         $selectedRow=$rows|Where-Object {$_.id -eq $State.selectedId}|Select-Object -First 1
-        if($selectedRow){$ServerList.SelectedItem=$selectedRow}
-        if($State.profiles.Count){$QuickServer.SelectedIndex=$idx;$SelectedServer.Text=$State.profiles[$idx].name;$LatencyLabel.Text=$State.profiles[$idx].latency}else{$SelectedServer.Text='Серверы не найдены'}
+        if($selectedRow){$ServerList.SelectedItem=$selectedRow;$HomeServerList.SelectedItem=$selectedRow}
+        if($State.profiles.Count){$QuickServer.SelectedIndex=$idx;$SelectedServer.Text=$State.profiles[$idx].name;$LatencyServerName.Text=$State.profiles[$idx].name;$LatencyLabel.Text=$State.profiles[$idx].latency}else{$SelectedServer.Text='Серверы не найдены';$LatencyServerName.Text='Сервер не выбран'}
         $ServerLoadStatus.Text=$script:ServerLoadMessage
         $ServerLoadStatus.Foreground=switch($script:ServerLoadState){'error'{'#FF93A4'}'empty'{'#FF93A4'}'success'{'#78E6B4'}default{'#CDBFFF'}}
     }finally{$script:RefreshingProfiles=$false}
@@ -2504,6 +2503,34 @@ function Complete-LatencyProbe {
     Draw-LatencyGraph
     Start-LatencyProbe
 }
+function Update-SelectedLatencyDisplay([string]$Text='—') {
+    $profile=$State.profiles|Where-Object {$_.id -eq $State.selectedId}|Select-Object -First 1
+    $LatencyServerName.Text=if($profile){[string]$profile.name}else{'Сервер не выбран'}
+    $LatencyLabel.Text=$Text
+    $LatencyLastCheckedHome.Text=if($script:LatencyLastCheckedAt){"Последняя проверка: $($script:LatencyLastCheckedAt.ToString('dd.MM.yyyy HH:mm:ss'))"}else{'Последняя проверка: ещё не выполнялась'}
+}
+function Start-SelectedLatencyProbe {
+    if($script:SelectedPingTask){return}
+    $profile=$State.profiles|Where-Object {$_.id -eq $State.selectedId}|Select-Object -First 1
+    if(-not $profile){Update-SelectedLatencyDisplay '—';return}
+    $script:SelectedPingProfileId=[string]$profile.id
+    $LatencyRefreshHome.IsEnabled=$false
+    $script:SelectedPingTask=[LunaLatencyProbe]::MeasureTcpAsync([string]$profile.host,[int]$profile.port,3000)
+}
+function Complete-SelectedLatencyProbe {
+    if(-not $script:SelectedPingTask -or -not $script:SelectedPingTask.IsCompleted){return}
+    try{$ms=[int]$script:SelectedPingTask.GetAwaiter().GetResult()}catch{$ms=-1}
+    $script:SelectedPingTask=$null
+    $LatencyRefreshHome.IsEnabled=$true
+    if($script:SelectedPingButton){$script:SelectedPingButton.Content='↻';$script:SelectedPingButton.IsEnabled=$true;$script:SelectedPingButton=$null}
+    if($script:SelectedPingProfileId -ne [string]$State.selectedId){return}
+    $text=if($ms -lt 0){'таймаут'}else{"$ms ms"}
+    $script:LatencyLastCheckedAt=Get-Date
+    $profile=$State.profiles|Where-Object {$_.id -eq $State.selectedId}|Select-Object -First 1
+    if($profile){$profile.latency=$text;$profile.healthStatus=if($ms -lt 0){'Недоступен'}else{'Доступен'}}
+    Update-SelectedLatencyDisplay $text
+    Refresh-Profiles
+}
 function Test-ProfileLatency($Profile) {
     $client=New-Object Net.Sockets.TcpClient
     $watch=[Diagnostics.Stopwatch]::StartNew()
@@ -2674,7 +2701,43 @@ $NavHome.Add_Click({Show-Page $HomePage});$NavServers.Add_Click({Show-Page $Serv
 $ConnectButton.Add_Click({if($script:CoreProcess -and -not $script:CoreProcess.HasExited){Stop-Tunnel}else{Start-Tunnel}})
 $RouteBaselineButton.Add_Click({Start-RouteQualityCheck $false})
 $RouteCheckButton.Add_Click({Start-RouteQualityCheck $true})
-$QuickServer.Add_SelectionChanged({if(-not $script:RefreshingProfiles -and $QuickServer.SelectedIndex -ge 0 -and $QuickServer.SelectedIndex -lt $State.profiles.Count){$State.selectedId=$State.profiles[$QuickServer.SelectedIndex].id;Save-State;Refresh-Profiles}})
+$QuickServer.Add_SelectionChanged({if(-not $script:RefreshingProfiles -and $QuickServer.SelectedIndex -ge 0 -and $QuickServer.SelectedIndex -lt $State.profiles.Count){$State.selectedId=$State.profiles[$QuickServer.SelectedIndex].id;$script:LatencyLastCheckedAt=$null;Save-State;Refresh-Profiles;Update-SelectedLatencyDisplay ([string]$State.profiles[$QuickServer.SelectedIndex].latency)}})
+$HomeServerList.Add_SelectionChanged({
+    if($HomeServerList.SelectedItem -and -not $script:RefreshingProfiles){
+        $State.selectedId=[string]$HomeServerList.SelectedItem.id
+        $script:LatencyLastCheckedAt=$null
+        Save-State
+        Refresh-Profiles
+        Update-SelectedLatencyDisplay ([string]$HomeServerList.SelectedItem.latency)
+    }
+})
+$HomeServerList.AddHandler([Windows.Controls.Button]::ClickEvent,[Windows.RoutedEventHandler]{
+    param($sender,$eventArgs)
+    $source=$eventArgs.OriginalSource
+    while($source -and $source -isnot [Windows.Controls.Button]){$source=[Windows.Media.VisualTreeHelper]::GetParent($source)}
+    if($source -is [Windows.Controls.Button] -and $source.Tag){
+        $State.selectedId=[string]$source.Tag
+        $script:LatencyLastCheckedAt=$null
+        $script:SelectedPingButton=$source
+        $source.IsEnabled=$false
+        $source.Content='◌'
+        Save-State
+        $selectedProfile=$State.profiles|Where-Object {$_.id -eq $State.selectedId}|Select-Object -First 1
+        if($selectedProfile){$SelectedServer.Text=$selectedProfile.name;$LatencyServerName.Text=$selectedProfile.name}
+        Start-SelectedLatencyProbe
+        $eventArgs.Handled=$true
+    }
+})
+$HomePingAllButton.Add_Click({
+    $HomePingAllButton.IsEnabled=$false;$HomePingAllButton.Content='◌ Пинг всех'
+    try{$result=Test-AllProfileLatencies;Refresh-Profiles;Show-Notice 'Проверка завершена' "Доступно: $($result.available) · Недоступно: $($result.unavailable) · Всего: $($result.total)" 'SUCCESS'}
+    finally{$HomePingAllButton.Content='⚡ Пинг всех';$HomePingAllButton.IsEnabled=$true}
+})
+$HomeModeBox.Add_SelectionChanged({
+    if($HomeModeBox.SelectedIndex -eq 0){$State.settings.mode='System proxy';$ModeBox.SelectedIndex=0;$ModeLabel.Text='System proxy';Save-State}
+})
+$LatencyRefreshHome.Add_Click({Start-SelectedLatencyProbe})
+$LatencyAutoRefresh.Add_Click({$State.settings.latencyAutoRefresh=[bool]$LatencyAutoRefresh.IsChecked;Save-State})
 $SearchBox.Add_TextChanged({Refresh-Profiles})
 $ImportClipboard.Add_Click({try{$links=Parse-SubscriptionBody ([Windows.Clipboard]::GetText());if(-not $links.Count){$links=@(Parse-ProxyLink ([Windows.Clipboard]::GetText()))};$State.profiles+=@($links);Save-State;Refresh-Profiles;Show-Notice 'Импорт завершён' "Добавлено: $(@($links).Count)" 'SUCCESS'}catch{Show-Notice 'Ошибка импорта' $_.Exception.Message 'ERROR'}})
 $AddLink.Add_Click({$text=[Microsoft.VisualBasic.Interaction]::InputBox('Вставьте ссылку VLESS, VMess, Trojan, Shadowsocks или SOCKS5:','Добавить сервер','');if($text){try{$State.profiles+=,(Parse-ProxyLink $text);Save-State;Refresh-Profiles;Show-Notice 'Сервер добавлен' 'Конфигурация сохранена.' 'SUCCESS'}catch{Show-Notice 'Ошибка импорта' $_.Exception.Message 'ERROR'}}})
@@ -2685,7 +2748,7 @@ $ServerList.Add_SelectionChanged({
         $index=-1
         for($i=0;$i -lt $State.profiles.Count;$i++){if($State.profiles[$i].id -eq $State.selectedId){$index=$i;break}}
         $script:RefreshingProfiles=$true
-        try{if($index -ge 0){$QuickServer.SelectedIndex=$index;$SelectedServer.Text=$State.profiles[$index].name}}finally{$script:RefreshingProfiles=$false}
+        try{if($index -ge 0){$QuickServer.SelectedIndex=$index;$HomeServerList.SelectedItem=($HomeServerList.ItemsSource|Where-Object {$_.id -eq $State.selectedId}|Select-Object -First 1);$SelectedServer.Text=$State.profiles[$index].name;$LatencyServerName.Text=$State.profiles[$index].name}}finally{$script:RefreshingProfiles=$false}
         Save-State
     }
 })
@@ -2705,7 +2768,9 @@ $ExportLogs.Add_Click({$dialog=New-Object Microsoft.Win32.SaveFileDialog;$dialog
 $SaveSettings.Add_Click({
     $oldLanguage=$State.settings.language;$oldTheme=$State.settings.theme
     $State.settings.mode=([string]$ModeBox.SelectedItem.Content);$State.settings.localPort=[int]$PortBox.Text;$State.settings.dns=$DnsBox.Text;$State.settings.autoStart=$AutoStart.IsChecked;$State.settings.startMinimized=$StartMinimized.IsChecked
-    $State.settings.language=if($LanguageBox.SelectedIndex -eq 1){'English'}else{'Русский'}
+    $supportedLanguages=@('Русский','English')
+    $languageIndex=[Math]::Max(0,[Math]::Min($LanguageBox.SelectedIndex,$supportedLanguages.Count-1))
+    $State.settings.language=$supportedLanguages[$languageIndex]
     $State.settings.theme=@('Темная','Светлая','Авто')[[Math]::Max(0,$ThemeBox.SelectedIndex)]
     $State.settings.autoConnect=$AutoConnect.IsChecked;$State.settings.killSwitch=$KillSwitch.IsChecked;$State.settings.dnsProtection=$DnsProtection.IsChecked;$State.settings.enableIPv6=$EnableIPv6.IsChecked;$State.settings.webRtcProtection=$WebRtcProtection.IsChecked;$State.settings.dnsLeakProtection=$DnsLeakProtection.IsChecked;$State.settings.checkUpdates=$CheckUpdates.IsChecked;$State.settings.anonymousStats=$AnonymousStats.IsChecked
     $State.settings.telemetryConsentAsked=$true
@@ -2741,6 +2806,10 @@ $FixButton.Add_Click({$FixButton.IsEnabled=$false;$FixButton.Content='Испра
 
 $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::FromSeconds(1)
 $timer.Add_Tick({if($script:ConnectedAt){$SessionTime.Text=((Get-Date)-$script:ConnectedAt).ToString('hh\:mm\:ss');if($script:CoreProcess.HasExited){Stop-Tunnel}else{Complete-LatencyProbe;Update-SessionStatistics}};Update-RouteQualityState;Update-SystemTrafficStatistics})
+$script:SelectedLatencyTimer=New-Object Windows.Threading.DispatcherTimer
+$script:SelectedLatencyTimer.Interval=[TimeSpan]::FromMilliseconds(670)
+$script:SelectedLatencyTimer.Add_Tick({Complete-SelectedLatencyProbe;if([bool]$LatencyAutoRefresh.IsChecked -and -not $script:SelectedPingTask){Start-SelectedLatencyProbe}})
+$script:SelectedLatencyTimer.Start()
 $logTimer=New-Object Windows.Threading.DispatcherTimer;$logTimer.Interval=[TimeSpan]::FromMilliseconds(1500)
 $logTimer.Add_Tick({if($LogsPage.Visibility -eq 'Visible'){Refresh-LogView}});$logTimer.Start()
 $script:BackendTimer=New-Object Windows.Threading.DispatcherTimer
@@ -2757,19 +2826,21 @@ $Window.Add_Closing({
     }
     Stop-Tunnel
     Save-State
+    $timer.Stop();$logTimer.Stop();$script:BackendTimer.Stop();$script:SelectedLatencyTimer.Stop()
     if($script:TrayIcon){$script:TrayIcon.Visible=$false;$script:TrayIcon.Dispose()}
     if($script:TrayIconImage){$script:TrayIconImage.Dispose()}
 })
 $Window.Add_StateChanged({if($Window.WindowState -eq 'Minimized'){Hide-LunaToTray}})
 
 $DirectDomains.Text=$State.settings.directDomains;$BlockDomains.Text=$State.settings.blockDomains;$BypassLan.IsChecked=$State.settings.bypassLan;$BlockAds.IsChecked=$State.settings.blockAds
-$ModeBox.SelectedIndex=if($State.settings.mode -eq 'TUN'){1}else{0};$PortBox.Text=$State.settings.localPort;$DnsBox.Text=$State.settings.dns;$AutoStart.IsChecked=$State.settings.autoStart;$StartMinimized.IsChecked=$State.settings.startMinimized;$ModeLabel.Text=$State.settings.mode
-$LanguageBox.SelectedIndex=if($State.settings.language -eq 'English'){1}else{0};$ThemeBox.SelectedIndex=switch($State.settings.theme){'Светлая'{1}'Авто'{2}default{0}};$AutoConnect.IsChecked=$State.settings.autoConnect;$KillSwitch.IsChecked=$State.settings.killSwitch;$DnsProtection.IsChecked=$State.settings.dnsProtection;$EnableIPv6.IsChecked=$State.settings.enableIPv6;$WebRtcProtection.IsChecked=$State.settings.webRtcProtection;$DnsLeakProtection.IsChecked=$State.settings.dnsLeakProtection;$CheckUpdates.IsChecked=$State.settings.checkUpdates;$AnonymousStats.IsChecked=$State.settings.anonymousStats;$EngineBox.SelectedIndex=0;$SplitAppList.ItemsSource=@($State.settings.splitApps)
+$ModeBox.SelectedIndex=0;$HomeModeBox.SelectedIndex=0;$State.settings.mode='System proxy';$PortBox.Text=$State.settings.localPort;$DnsBox.Text=$State.settings.dns;$AutoStart.IsChecked=$State.settings.autoStart;$StartMinimized.IsChecked=$State.settings.startMinimized;$ModeLabel.Text=$State.settings.mode
+$supportedLanguages=@('Русский','English');$savedLanguageIndex=[Array]::IndexOf($supportedLanguages,[string]$State.settings.language);$LanguageBox.SelectedIndex=if($savedLanguageIndex -ge 0){$savedLanguageIndex}else{0};$ThemeBox.SelectedIndex=switch($State.settings.theme){'Светлая'{1}'Авто'{2}default{0}};$AutoConnect.IsChecked=$State.settings.autoConnect;$KillSwitch.IsChecked=$State.settings.killSwitch;$DnsProtection.IsChecked=$State.settings.dnsProtection;$EnableIPv6.IsChecked=$State.settings.enableIPv6;$WebRtcProtection.IsChecked=$State.settings.webRtcProtection;$DnsLeakProtection.IsChecked=$State.settings.dnsLeakProtection;$CheckUpdates.IsChecked=$State.settings.checkUpdates;$AnonymousStats.IsChecked=$State.settings.anonymousStats;$LatencyAutoRefresh.IsChecked=[bool]$State.settings.latencyAutoRefresh;$EngineBox.SelectedIndex=0;$SplitAppList.ItemsSource=@($State.settings.splitApps)
 if($env:LUNA_PACKAGED -eq '1'){$AutoStart.IsChecked=$false;$AutoStart.IsEnabled=$false;$AutoStart.Content='Автозапуск — управляйте через параметры Windows (Store)'}
 $SaveSettings.IsEnabled=$false
 $markSettingsDirty={$script:SettingsDirty=$true;$SaveSettings.IsEnabled=$true}
 $PortBox.Add_TextChanged($markSettingsDirty);$DnsBox.Add_TextChanged($markSettingsDirty)
-$LanguageBox.Add_SelectionChanged($markSettingsDirty);$ThemeBox.Add_SelectionChanged($markSettingsDirty);$ModeBox.Add_SelectionChanged($markSettingsDirty)
+$restartRequiredChanged={& $markSettingsDirty;Show-Notice 'Требуется перезапуск приложения Luna' 'Новый язык или тема применятся после следующего запуска.' 'INFO'}
+$LanguageBox.Add_SelectionChanged($restartRequiredChanged);$ThemeBox.Add_SelectionChanged($restartRequiredChanged);$ModeBox.Add_SelectionChanged($markSettingsDirty)
 foreach($settingToggle in @($AutoStart,$StartMinimized,$AutoConnect,$KillSwitch,$DnsProtection,$EnableIPv6,$WebRtcProtection,$DnsLeakProtection,$CheckUpdates,$AnonymousStats)){$settingToggle.Add_Click($markSettingsDirty)}
 Initialize-ServerCatalog;Refresh-CoreStatus;Refresh-Profiles;Refresh-Subscriptions;Initialize-SystemTray;Refresh-RouteQualityView;Update-RouteComparisonSummary;$timer.Start()
 $script:ConsentPromptActive=$false
@@ -2783,7 +2854,6 @@ $Window.Add_Activated({
 })
 $Window.Add_ContentRendered({
     $script:BackendStartupSilent=[bool]$script:StartHidden
-    if(-not $script:StartHidden){$HomePage.ScrollToTop()}
     if($script:StartHidden){Hide-LunaToTray;$script:StartHidden=$false}
     if(-not $script:BackendStartupSyncDone){
         $script:BackendStartupSyncDone=$true
