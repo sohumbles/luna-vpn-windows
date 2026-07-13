@@ -6,6 +6,12 @@ hosts PowerShell in-process without displaying a console window.
 
 Current source version: **1.3.3-release**.
 
+The public website now includes **Luna SpeedTest 2.0** at
+https://security-luna-vpn.ru/speedtest. It performs real multi-stream browser
+measurements and does not require a telemetry token. See
+[`docs/LUNA-SPEEDTEST-2.md`](docs/LUNA-SPEEDTEST-2.md) for the measurement model
+and deployment boundary.
+
 ## Features
 
 - VLESS Reality, VMess, Trojan and Shadowsocks profile import;
