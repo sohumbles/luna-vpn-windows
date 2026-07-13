@@ -1697,7 +1697,7 @@ $xamlText=@'
     </Grid>
     <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="1.35*"/><ColumnDefinition/></Grid.ColumnDefinitions>
      <Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><StackPanel><TextBlock Text="РЕЖИМ" Foreground="#C4C8DC"/><ComboBox Name="HomeModeBox" Margin="0,5,0,0"><ComboBoxItem Content="System proxy"/><ComboBoxItem Content="TUN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="ModeLabel" Text="System proxy" Visibility="Collapsed"/></StackPanel></Border>
-     <Border Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="ЗАДЕРЖКА ВЫБРАННОГО СЕРВЕРА" Foreground="#C4C8DC"/><TextBlock Name="LatencyServerName" Text="Сервер не выбран" Foreground="#9EA5C2" FontSize="11"/><TextBlock Name="LatencyLabel" Text="—" FontSize="20"/><TextBlock Name="LatencyLastCheckedHome" Text="Последняя проверка: ещё не выполнялась" Foreground="#949AB8" FontSize="11"/><CheckBox Name="LatencyAutoRefresh" Content="Автообновление каждые 0,67 секунды" Margin="4,6,0,0"/></StackPanel><Button Name="LatencyRefreshHome" Grid.Column="1" Content="Обновить" VerticalAlignment="Center"/></Grid></Border>
+     <Border Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="ЗАДЕРЖКА ВЫБРАННОГО СЕРВЕРА" Foreground="#C4C8DC"/><TextBlock Name="LatencyServerName" Text="Сервер не выбран" Foreground="#9EA5C2" FontSize="11"/><TextBlock Name="LatencyLabel" Text="—" FontSize="20"/><TextBlock Name="LatencyLastCheckedHome" Text="Последняя проверка: ещё не выполнялась" Foreground="#949AB8" FontSize="11"/><CheckBox Name="LatencyAutoRefresh" Content="Автообновление" Margin="4,6,0,0"/></StackPanel><Button Name="LatencyRefreshHome" Grid.Column="1" Content="Обновить" VerticalAlignment="Center"/></Grid></Border>
      <Border Grid.Column="2" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><StackPanel><TextBlock Text="СКОРОСТЬ" Foreground="#C4C8DC"/><TextBlock Name="HomeUpSpeed" Text="↑ 0 Mbps" Foreground="#65E6A7" FontSize="15"/><TextBlock Name="HomeDownSpeed" Text="↓ 0 Mbps" Foreground="#FF6B7A" FontSize="15"/></StackPanel></Border>
     </Grid>
    </Grid>
@@ -1829,7 +1829,7 @@ if($State.settings.language -eq 'English'){
         'Проверять обновления'='Check for updates';'Отправлять анонимную статистику'='Send anonymous statistics'
         'Экспорт'='Export';'Очистить'='Clear';'Смотреть реал.тайм'='Watch live';'Русский'='Russian';'Авто'='Auto'
         'ЗАДЕРЖКА ВЫБРАННОГО СЕРВЕРА'='SELECTED SERVER LATENCY';'Выберите сервер или проверьте задержку'='Select a server or check latency'
-        'Автообновление каждые 0,67 секунды'='Auto-refresh every 0.67 seconds';'Последняя проверка: ещё не выполнялась'='Last check: not run yet'
+        'Автообновление'='Auto-refresh';'Последняя проверка: ещё не выполнялась'='Last check: not run yet'
         'Сервер не выбран'='No server selected';'Обновить'='Refresh';'Пинг всех'='Ping all';'Требуется перезапуск приложения Luna'='Luna restart required'
     }
     foreach($entry in @($languageMap.GetEnumerator()|Sort-Object {$_.Key.Length} -Descending)){$xamlText=$xamlText.Replace($entry.Key,$entry.Value)}
@@ -2737,7 +2737,8 @@ $HomeModeBox.Add_SelectionChanged({
     if($HomeModeBox.SelectedIndex -eq 0){$State.settings.mode='System proxy';$ModeBox.SelectedIndex=0;$ModeLabel.Text='System proxy';Save-State}
 })
 $LatencyRefreshHome.Add_Click({Start-SelectedLatencyProbe})
-$LatencyAutoRefresh.Add_Click({$State.settings.latencyAutoRefresh=[bool]$LatencyAutoRefresh.IsChecked;Save-State})
+$LatencyAutoRefresh.Add_Checked({$script:SelectedLatencyAutoEnabled=$true;$State.settings.latencyAutoRefresh=$true;Save-State})
+$LatencyAutoRefresh.Add_Unchecked({$script:SelectedLatencyAutoEnabled=$false;$State.settings.latencyAutoRefresh=$false;Save-State})
 $SearchBox.Add_TextChanged({Refresh-Profiles})
 $ImportClipboard.Add_Click({try{$links=Parse-SubscriptionBody ([Windows.Clipboard]::GetText());if(-not $links.Count){$links=@(Parse-ProxyLink ([Windows.Clipboard]::GetText()))};$State.profiles+=@($links);Save-State;Refresh-Profiles;Show-Notice 'Импорт завершён' "Добавлено: $(@($links).Count)" 'SUCCESS'}catch{Show-Notice 'Ошибка импорта' $_.Exception.Message 'ERROR'}})
 $AddLink.Add_Click({$text=[Microsoft.VisualBasic.Interaction]::InputBox('Вставьте ссылку VLESS, VMess, Trojan, Shadowsocks или SOCKS5:','Добавить сервер','');if($text){try{$State.profiles+=,(Parse-ProxyLink $text);Save-State;Refresh-Profiles;Show-Notice 'Сервер добавлен' 'Конфигурация сохранена.' 'SUCCESS'}catch{Show-Notice 'Ошибка импорта' $_.Exception.Message 'ERROR'}}})
@@ -2808,7 +2809,8 @@ $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::
 $timer.Add_Tick({if($script:ConnectedAt){$SessionTime.Text=((Get-Date)-$script:ConnectedAt).ToString('hh\:mm\:ss');if($script:CoreProcess.HasExited){Stop-Tunnel}else{Complete-LatencyProbe;Update-SessionStatistics}};Update-RouteQualityState;Update-SystemTrafficStatistics})
 $script:SelectedLatencyTimer=New-Object Windows.Threading.DispatcherTimer
 $script:SelectedLatencyTimer.Interval=[TimeSpan]::FromMilliseconds(670)
-$script:SelectedLatencyTimer.Add_Tick({Complete-SelectedLatencyProbe;if([bool]$LatencyAutoRefresh.IsChecked -and -not $script:SelectedPingTask){Start-SelectedLatencyProbe}})
+$script:SelectedLatencyAutoEnabled=[bool]$State.settings.latencyAutoRefresh
+$script:SelectedLatencyTimer.Add_Tick({Complete-SelectedLatencyProbe;if($script:SelectedLatencyAutoEnabled -and -not $script:SelectedPingTask){Start-SelectedLatencyProbe}})
 $script:SelectedLatencyTimer.Start()
 $logTimer=New-Object Windows.Threading.DispatcherTimer;$logTimer.Interval=[TimeSpan]::FromMilliseconds(1500)
 $logTimer.Add_Tick({if($LogsPage.Visibility -eq 'Visible'){Refresh-LogView}});$logTimer.Start()
