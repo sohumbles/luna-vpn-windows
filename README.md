@@ -4,7 +4,7 @@ Luna is a Windows desktop client for managing Xray-based VPN/proxy profiles.
 The interface is implemented with WPF and PowerShell, while the native launcher
 hosts PowerShell in-process without displaying a console window.
 
-Current source version: **1.3.5-release**.
+Current source version: **1.4.0-release**.
 
 Official website: https://security-luna-vpn.ru/
 
@@ -14,8 +14,11 @@ Luna SpeedTest: https://security-luna-vpn.ru/speedtest
 
 - VLESS Reality, VMess, Trojan and Shadowsocks profile import;
 - subscriptions and server catalogue;
-- System Proxy mode; TUN is explicitly marked as under development;
-- split tunnelling and per-application traffic diagnostics are marked as under development;
+- System Proxy mode and native Xray TUN mode for Windows 10/11;
+- working Split Tunneling exclusions for websites, IPv4/IPv6 addresses and
+  CIDR networks, applications and games;
+- process-aware direct routing by the full path to an executable file;
+- local validation, import and export of Split Tunneling rules;
 - real network counters;
 - route-quality diagnostics for YouTube, Discord, Microsoft, GitHub and
   Cloudflare;
@@ -27,9 +30,13 @@ Route-quality diagnostics are not a speed test. They use short HTTPS requests
 and report the measured result, timeout or protocol error without replacing it
 with synthetic values.
 
-The 1.3.5 desktop layout keeps the connection control, mode and selected-server
+The 1.4.0 desktop layout keeps the connection control, mode and selected-server
 latency visible while only the server catalogue scrolls. The interface keeps
 the Russian/English language selector and the dark/light/automatic theme selector.
+
+Split Tunneling uses Xray's native Windows TUN inbound. Luna requests elevation
+only when a TUN connection is started. Exclusion rules stay in the local Luna
+state file and are not sent to the Luna backend.
 
 ## Repository layout
 

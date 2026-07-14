@@ -13,9 +13,9 @@ using System.Management.Automation.Runspaces;
 [assembly: AssemblyCompany("Luna")]
 [assembly: AssemblyProduct("Luna")]
 [assembly: AssemblyCopyright("Copyright © 2026")]
-[assembly: AssemblyVersion("1.3.5.0")]
-[assembly: AssemblyFileVersion("1.3.5.0")]
-[assembly: AssemblyInformationalVersion("1.3.5-release")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
+[assembly: AssemblyInformationalVersion("1.4.0-release")]
 
 internal static class LunaLauncher
 {
@@ -60,8 +60,18 @@ internal static class LunaLauncher
         bool createdNew;
         using (Mutex instanceMutex = new Mutex(true, InstanceMutexName, out createdNew))
         {
+            bool elevationHandoff = args.Any(arg => string.Equals(arg, "--elevated-tun", StringComparison.OrdinalIgnoreCase));
             if (!createdNew)
             {
+                if (elevationHandoff)
+                {
+                    bool acquired = false;
+                    try { acquired = instanceMutex.WaitOne(TimeSpan.FromSeconds(15)); }
+                    catch (AbandonedMutexException) { acquired = true; }
+                    if (acquired)
+                        return Run(args);
+                }
+
                 System.Windows.Forms.MessageBox.Show(
                     "Luna уже запущена.\r\n\r\nОткройте существующее окно через панель задач или значок Luna в системном трее.",
                     "Luna уже работает",
@@ -84,7 +94,7 @@ internal static class LunaLauncher
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Luna",
                 "runtime",
-                "1.3.5-release");
+                "1.4.0-release");
             Directory.CreateDirectory(runtime);
 
             string script = Path.Combine(runtime, "Luna.ps1");
@@ -120,6 +130,17 @@ internal static class LunaLauncher
             {
                 Environment.SetEnvironmentVariable(
                     "LUNA_START_IN_TRAY",
+                    "1",
+                    EnvironmentVariableTarget.Process);
+            }
+
+            if (args.Any(arg => string.Equals(
+                arg,
+                "--elevated-tun",
+                StringComparison.OrdinalIgnoreCase)))
+            {
+                Environment.SetEnvironmentVariable(
+                    "LUNA_TUN_AUTOCONNECT",
                     "1",
                     EnvironmentVariableTarget.Process);
             }

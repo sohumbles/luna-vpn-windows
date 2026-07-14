@@ -238,9 +238,25 @@ Invoke-Test 'Desktop timer uses the strict selected-latency policy' {
     Assert-True ($applicationSource -match 'SelectedLatencyAutoGeneration') 'Stale automatic results must be invalidated'
 }
 
+Invoke-Test 'Split Tunneling compiles to native Xray TUN routing' {
+    $applicationPath = @(
+        (Join-Path $PSScriptRoot '..\Luna.ps1'),
+        (Join-Path $PSScriptRoot '..\src\Luna.ps1')
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $applicationSource = Get-Content -Raw -Encoding UTF8 $applicationPath
+    Assert-True ($applicationSource -match "protocol='tun'") 'Native Xray TUN inbound must exist'
+    Assert-True ($applicationSource -match 'autoSystemRoutingTable=\$routes') 'TUN must install the Windows system route'
+    Assert-True ($applicationSource -match "autoOutboundsInterface='auto'") 'Xray outbound loop protection must be enabled'
+    Assert-True ($applicationSource -match 'process=\$processes') 'Application and game exclusions must compile to process rules'
+    Assert-True ($applicationSource -match "splitDomains") 'Website exclusions must be persisted'
+    Assert-True ($applicationSource -match "splitIps") 'IP and CIDR exclusions must be persisted'
+    Assert-True ($applicationSource -match "Request-TunElevation") 'TUN must request Windows elevation when required'
+    Assert-True ($applicationSource -match "luna\.split\.v1") 'Import/export schema must be versioned'
+}
+
 $elapsed = [DateTimeOffset]::UtcNow - $script:StartedAt
 Write-Host ''
-Write-Host ('Luna 1.3.0 monitoring harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
+Write-Host ('Luna 1.4.0 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
 
 if ($script:Failed -ne 0) { exit 1 }
 exit 0

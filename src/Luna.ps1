@@ -1,5 +1,5 @@
-# Luna 1.3.5-release — Windows 10/11 proxy/VPN client
-# Luna 1.3.5-release build with controlled selected-server latency refresh.
+# Luna 1.4.0-release — Windows 10/11 proxy/VPN client
+# Native Xray TUN split routing for websites, IPs, applications and games.
 [CmdletBinding()]
 param()
 
@@ -1112,7 +1112,7 @@ public static class LunaTrafficMeter
 }
 '@ -ReferencedAssemblies 'System.Net.Http.dll'
 
-$AppVersion = '1.3.5-release'
+$AppVersion = '1.4.0-release'
 $AppRoot = Join-Path $env:LOCALAPPDATA 'Luna'
 $LegacyRoot = Join-Path $env:LOCALAPPDATA 'LumaTunnel'
 $CoreDir = Join-Path $AppRoot 'core'
@@ -1144,7 +1144,7 @@ $defaultState = @{
         autoConnect=$false;killSwitch=$false;dnsProtection=$false;enableIPv6=$false
         webRtcProtection=$false;dnsLeakProtection=$false;checkUpdates=$true;anonymousStats=$false
         telemetryConsentAsked=$false;latencyAutoRefresh=$false
-        engine='Xray-core';splitApps=@()
+        engine='Xray-core';splitEnabled=$false;splitDomains=@();splitIps=@();splitApps=@();splitGames=@()
     }
 }
 
@@ -1190,8 +1190,15 @@ $script:State = Load-State
 foreach($key in $defaultState.settings.Keys){
     if(-not $script:State.settings.ContainsKey($key)){$script:State.settings[$key]=$defaultState.settings[$key]}
 }
-if($script:State.settings.mode -eq 'TUN'){$script:State.settings.mode='System proxy'}
 foreach($unfinishedSetting in @('autoConnect','killSwitch','dnsProtection','enableIPv6','webRtcProtection','dnsLeakProtection','checkUpdates')){$script:State.settings[$unfinishedSetting]=$false}
+$script:State.settings.splitDomains=@($script:State.settings.splitDomains|Where-Object {$_})
+$script:State.settings.splitIps=@($script:State.settings.splitIps|Where-Object {$_})
+$script:State.settings.splitApps=@($script:State.settings.splitApps|Where-Object {$_})
+$script:State.settings.splitGames=@($script:State.settings.splitGames|Where-Object {$_})
+if($script:State.settings.directDomains){
+    $legacyDirect=@([string]$script:State.settings.directDomains -split '[,;\r\n]+'|ForEach-Object {$_.Trim()}|Where-Object {$_})
+    $script:State.settings.splitDomains=@($script:State.settings.splitDomains+$legacyDirect|Select-Object -Unique)
+}
 $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $existingRunValue=(Get-ItemProperty $runKey -Name Luna -ErrorAction SilentlyContinue).Luna
 if($env:LUNA_EXECUTABLE_PATH){
@@ -1571,6 +1578,45 @@ function Build-StreamSettings($p) {
     if($s.security -eq 'reality'){$s.realitySettings=@{serverName=$e.sni;publicKey=$e.publicKey;shortId=$e.shortId;fingerprint=$e.fingerprint;spiderX=(Get-Or $e.spiderX '/')}}
     return $s
 }
+function Get-LunaRoutingRules {
+    $rules=@()
+    if($State.settings.mode -eq 'TUN'){
+        $rules+=@{type='field';inboundTag=@('tun-in');process=@('self/','xray/');outboundTag='direct'}
+    }
+    if($State.settings.bypassLan){$rules+=@{type='field';ip=@('geoip:private');outboundTag='direct'}}
+    if($State.settings.blockAds){$rules+=@{type='field';domain=@('geosite:category-ads-all');outboundTag='block'}}
+    $block=@([string]$State.settings.blockDomains -split '[,;\r\n]+'|ForEach-Object {$_.Trim()}|Where-Object {$_}|ForEach-Object {'domain:'+($_ -replace '^\*\.','')})
+    if($block.Count){$rules+=@{type='field';domain=$block;outboundTag='block'}}
+    $direct=@()
+    $direct+=@([string]$State.settings.directDomains -split '[,;\r\n]+'|ForEach-Object {$_.Trim()}|Where-Object {$_})
+    if([bool]$State.settings.splitEnabled){$direct+=@($State.settings.splitDomains)}
+    $direct=@($direct|ForEach-Object {([string]$_).Trim()}|Where-Object {$_}|ForEach-Object {'domain:'+($_ -replace '^\*\.','')}|Select-Object -Unique)
+    if($direct.Count){$rules+=@{type='field';domain=$direct;outboundTag='direct'}}
+    if([bool]$State.settings.splitEnabled){
+        $ips=@($State.settings.splitIps|ForEach-Object {([string]$_).Trim()}|Where-Object {$_}|Select-Object -Unique)
+        if($ips.Count){$rules+=@{type='field';ip=$ips;outboundTag='direct'}}
+        if($State.settings.mode -eq 'TUN'){
+            $processes=@($State.settings.splitApps+$State.settings.splitGames|ForEach-Object {([string]$_).Trim().Replace('\','/')}|Where-Object {$_}|Select-Object -Unique)
+            if($processes.Count){$rules+=@{type='field';inboundTag=@('tun-in');process=$processes;outboundTag='direct'}}
+        }
+    }
+    return $rules
+}
+function Add-LunaTunInbound($inbounds) {
+    $result=@($inbounds|Where-Object {$_.tag -ne 'tun-in' -and $_.protocol -ne 'tun'})
+    if($State.settings.mode -ne 'TUN'){return $result}
+    $gateway=@('172.19.0.1/30')
+    $routes=@('0.0.0.0/0')
+    if([bool]$State.settings.enableIPv6){$gateway+=,'fdfe:dcba:9876::1/126';$routes+=,'::/0'}
+    $dnsServers=@([string]$State.settings.dns -split '[,; ]+'|Where-Object {$_})
+    if(-not $dnsServers.Count){$dnsServers=@('1.1.1.1')}
+    $result+=@{
+        tag='tun-in';protocol='tun'
+        settings=@{name='Luna';mtu=1500;gateway=$gateway;dns=$dnsServers;autoSystemRoutingTable=$routes;autoOutboundsInterface='auto'}
+        sniffing=@{enabled=$true;destOverride=@('http','tls','quic');routeOnly=$true}
+    }
+    return $result
+}
 function Build-XrayConfig($p,[int]$InboundPort=0) {
     $e=$p.extra
     $basePort=if($InboundPort -gt 0){$InboundPort}else{[int]$State.settings.localPort}
@@ -1581,6 +1627,15 @@ function Build-XrayConfig($p,[int]$InboundPort=0) {
             if($inbound.protocol -eq 'socks'){$inbound.port=$basePort;$inbound.listen='127.0.0.1'}
             if($inbound.protocol -eq 'http'){$inbound.port=$basePort+1;$inbound.listen='127.0.0.1'}
         }
+        $jsonConfig.inbounds=@(Add-LunaTunInbound @($jsonConfig.inbounds))
+        if(-not $jsonConfig.outbounds){throw 'JSON-профиль не содержит outbound.'}
+        $proxyOutbound=@($jsonConfig.outbounds|Where-Object {$_.protocol -notin @('freedom','blackhole')}|Select-Object -First 1)
+        if($proxyOutbound){$proxyOutbound.tag='proxy'}
+        if(-not @($jsonConfig.outbounds|Where-Object {$_.tag -eq 'direct'}).Count){$jsonConfig.outbounds+=,@{protocol='freedom';tag='direct'}}
+        if(-not @($jsonConfig.outbounds|Where-Object {$_.tag -eq 'block'}).Count){$jsonConfig.outbounds+=,@{protocol='blackhole';tag='block'}}
+        if(-not $jsonConfig.routing){$jsonConfig.routing=@{domainStrategy='IPIfNonMatch';rules=@()}}
+        $jsonConfig.routing.domainStrategy='IPIfNonMatch'
+        $jsonConfig.routing.rules=@(Get-LunaRoutingRules)+@($jsonConfig.routing.rules)
         return $jsonConfig
     }
     switch($p.protocol){
@@ -1594,16 +1649,8 @@ function Build-XrayConfig($p,[int]$InboundPort=0) {
     $inbounds=@(@{listen='127.0.0.1';port=$basePort;protocol='socks';settings=@{udp=$false}})
     $httpPort=$basePort+1
     $inbounds+=@{listen='127.0.0.1';port=$httpPort;protocol='http';settings=@{}}
-    if($State.settings.mode -eq 'TUN'){
-        $inbounds+=@{tag='tun-in';protocol='tun';settings=@{name='luma';mtu=9000;stack='system';address=@('172.19.0.1/30');autoRoute=$true;strictRoute=$true}}
-    }
-    $rules=@()
-    if($State.settings.bypassLan){$rules+=@{type='field';ip=@('geoip:private');outboundTag='direct'}}
-    if($State.settings.blockAds){$rules+=@{type='field';domain=@('geosite:category-ads-all');outboundTag='block'}}
-    $direct=@($State.settings.directDomains.Split(',')|?{$_.Trim()}|%{'domain:'+$_.Trim()})
-    $block=@($State.settings.blockDomains.Split(',')|?{$_.Trim()}|%{'domain:'+$_.Trim()})
-    if($direct.Count){$rules+=@{type='field';domain=$direct;outboundTag='direct'}}
-    if($block.Count){$rules+=@{type='field';domain=$block;outboundTag='block'}}
+    $inbounds=@(Add-LunaTunInbound $inbounds)
+    $rules=@(Get-LunaRoutingRules)
     return @{
         log=@{loglevel='warning';access=$LogFile;error=$LogFile}
         dns=@{servers=@($State.settings.dns,'localhost')}
@@ -1660,14 +1707,14 @@ $xamlText=@'
     <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"><StackPanel>
      <Image Name="BrandIcon" Width="76" Height="76" HorizontalAlignment="Left" Stretch="UniformToFill" Margin="0,0,0,10"/>
      <TextBlock Text="Luna" FontSize="29" FontWeight="SemiBold" Foreground="#FFFFFF"/>
-     <TextBlock Text="VPN · 1.3.5-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
+     <TextBlock Text="VPN · 1.4.0-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
      <Button Name="NavHome" Content="◉  Подключение" HorizontalContentAlignment="Left"/>
      <Button Name="NavServers" Content="◫  Серверы" HorizontalContentAlignment="Left"/>
      <Button Name="NavSubs" Content="↻  Подписки" HorizontalContentAlignment="Left"/>
      <Button Name="NavRoutes" Content="⇄  Маршрутизация" HorizontalContentAlignment="Left"/>
      <Button Name="NavLogs" Content="≡  Журнал" HorizontalContentAlignment="Left"/>
      <Button Name="NavStats" Content="▥  Статистика" HorizontalContentAlignment="Left"/>
-     <Button Name="NavSplit" Content="⑂  Split Tunneling  ◌" ToolTip="В разработке" HorizontalContentAlignment="Left"/>
+     <Button Name="NavSplit" Content="⑂  Split Tunneling" ToolTip="Исключения сайтов, IP, приложений и игр" HorizontalContentAlignment="Left"/>
      <Button Name="NavApps" Content="▦  По приложениям" ToolTip="Реальный трафик через Luna" HorizontalContentAlignment="Left"/>
      <Button Name="NavSettings" Content="⚙  Настройки" HorizontalContentAlignment="Left"/>
      <Button Name="NavExperts" Content="◇  Для экспертов" HorizontalContentAlignment="Left"/>
@@ -1703,7 +1750,7 @@ $xamlText=@'
      </Border>
     </Grid>
     <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="1.35*"/><ColumnDefinition/></Grid.ColumnDefinitions>
-     <Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><StackPanel><TextBlock Text="РЕЖИМ" Foreground="#C4C8DC"/><ComboBox Name="HomeModeBox" Margin="0,5,0,0"><ComboBoxItem Content="System proxy"/><ComboBoxItem Content="TUN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="ModeLabel" Text="System proxy" Visibility="Collapsed"/></StackPanel></Border>
+     <Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><StackPanel><TextBlock Text="РЕЖИМ" Foreground="#C4C8DC"/><ComboBox Name="HomeModeBox" Margin="0,5,0,0"><ComboBoxItem Content="System proxy"/><ComboBoxItem Content="TUN"/></ComboBox><TextBlock Name="ModeLabel" Text="System proxy" Visibility="Collapsed"/></StackPanel></Border>
      <Border Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="ЗАДЕРЖКА ВЫБРАННОГО СЕРВЕРА" Foreground="#C4C8DC"/><TextBlock Name="LatencyServerName" Text="Сервер не выбран" Foreground="#9EA5C2" FontSize="11"/><TextBlock Name="LatencyLabel" Text="—" FontSize="20"/><TextBlock Name="LatencyLastCheckedHome" Text="Последняя проверка: ещё не выполнялась" Foreground="#949AB8" FontSize="11"/><CheckBox Name="LatencyAutoRefresh" Content="Автообновление" Margin="4,6,0,0"/></StackPanel><Button Name="LatencyRefreshHome" Grid.Column="1" Content="Обновить" VerticalAlignment="Center"/></Grid></Border>
      <Border Grid.Column="2" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Margin="5" Padding="13"><StackPanel><TextBlock Text="СКОРОСТЬ" Foreground="#C4C8DC"/><TextBlock Name="HomeUpSpeed" Text="↑ 0 Mbps" Foreground="#65E6A7" FontSize="15"/><TextBlock Name="HomeDownSpeed" Text="↓ 0 Mbps" Foreground="#FF6B7A" FontSize="15"/></StackPanel></Border>
     </Grid>
@@ -1761,23 +1808,37 @@ $xamlText=@'
       </ItemsControl>
      </Grid>
     </Border>   </StackPanel></ScrollViewer></Grid>
-   <Grid Name="SplitPage" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Split Tunneling · В разработке" FontSize="30" FontWeight="SemiBold"/><Border Grid.Row="1" Background="#302B63" CornerRadius="10" Padding="12" Margin="4,8,4,14"><TextBlock Text="Функция появится в следующих обновлениях. Пока можно подготовить список приложений, но исключения из VPN ещё не применяются." TextWrapping="Wrap" Foreground="#FFD166"/></Border><ListBox Name="SplitAppList" Grid.Row="2" Background="#0B0E29" Foreground="#F4F5FF"/><StackPanel Grid.Row="3" Orientation="Horizontal"><Button Name="AddSplitApp" Content="+ Добавить приложение"/><Button Name="RemoveSplitApp" Content="Удалить"/></StackPanel></Grid>
+   <Grid Name="SplitPage" Visibility="Collapsed">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel>
+     <TextBlock Text="Split Tunneling" FontSize="30" FontWeight="SemiBold"/>
+     <TextBlock Text="Выбранный трафик идёт напрямую, остальной — через VPN Luna." Foreground="#9EA5C2" Margin="0,4,0,14"/>
+     <Border Background="#101333" BorderBrush="#4B4295" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><CheckBox Name="SplitEnabled" Content="Включить контролируемое исключение трафика" FontSize="17" FontWeight="SemiBold"/><TextBlock Name="SplitStatus" Text="Выключено. Весь поддерживаемый трафик использует обычный маршрут Luna." Foreground="#AEB4CC" TextWrapping="Wrap" Margin="4,7,18,0"/></StackPanel><Border Grid.Column="1" Background="#241F58" CornerRadius="10" Padding="12,8" VerticalAlignment="Center"><TextBlock Text="TUN · нужны права администратора" Foreground="#CDBFFF"/></Border></Grid></Border>
+     <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+      <Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Сайты" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Домен и его поддомены будут обходить VPN." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitDomainList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><TextBox Name="SplitDomainInput" Width="220" ToolTip="example.com или *.example.com"/><Button Name="AddSplitDomain" Content="Добавить"/><Button Name="RemoveSplitDomain" Content="Удалить"/></StackPanel></Grid></Border>
+      <Border Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="IP-адреса" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Поддерживаются IPv4, IPv6 и CIDR-подсети." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitIpList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><TextBox Name="SplitIpInput" Width="220" ToolTip="203.0.113.7 или 203.0.113.0/24"/><Button Name="AddSplitIp" Content="Добавить"/><Button Name="RemoveSplitIp" Content="Удалить"/></StackPanel></Grid></Border>
+      <Border Grid.Row="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Приложения" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Выберите один или несколько исполняемых файлов .exe." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitAppList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><Button Name="AddSplitApp" Content="+ Добавить .exe"/><Button Name="RemoveSplitApp" Content="Удалить"/></StackPanel></Grid></Border>
+      <Border Grid.Row="1" Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Игры" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Добавьте основной .exe игры и, при необходимости, launcher." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitGameList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><Button Name="AddSplitGame" Content="+ Добавить игру"/><Button Name="RemoveSplitGame" Content="Удалить"/></StackPanel></Grid></Border>
+     </Grid>
+     <Border Background="#0B0E29" BorderBrush="#292B63" BorderThickness="1" CornerRadius="12" Padding="13" Margin="4,12"><TextBlock Text="Правила хранятся только на этом ПК. Luna не отправляет список сайтов, IP и пути к приложениям на сервер." Foreground="#AEB4CC" TextWrapping="Wrap"/></Border>
+     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Name="ImportSplitRules" Content="Импорт"/><Button Name="ExportSplitRules" Content="Экспорт"/><Button Name="ResetSplitRules" Content="Сбросить"/><Button Name="ApplySplitRules" Content="Применить" Background="#5147B8"/></StackPanel>
+    </StackPanel></ScrollViewer>
+   </Grid>
    <Grid Name="AppsPage" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><StackPanel><TextBlock Text="Трафик по приложениям" FontSize="30" FontWeight="SemiBold"/><TextBlock Name="AppsSummary" Text="Ожидаем трафик приложений через Luna…" Foreground="#9EA5C2" Margin="0,5,0,16"/></StackPanel><Border Grid.Row="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="10"><ListView Name="AppsTraffic"><ListView.View><GridView><GridViewColumn Header="Приложение" DisplayMemberBinding="{Binding name}" Width="230"/><GridViewColumn Header="PID" DisplayMemberBinding="{Binding pid}" Width="80"/><GridViewColumn Header="Получено" DisplayMemberBinding="{Binding received}" Width="125"/><GridViewColumn Header="Отправлено" DisplayMemberBinding="{Binding sent}" Width="125"/><GridViewColumn Header="Всего" DisplayMemberBinding="{Binding total}" Width="125"/><GridViewColumn Header="Активные соединения" DisplayMemberBinding="{Binding connections}" Width="165"/></GridView></ListView.View></ListView></Border></Grid>
    <Grid Name="SettingsPage" Visibility="Collapsed">
     <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Настройки" FontSize="30" FontWeight="SemiBold" Margin="0,0,0,18"/>
      <TextBlock Text="Интерфейс" FontSize="19" FontWeight="SemiBold"/><TextBlock Text="Язык"/><ComboBox Name="LanguageBox" Width="260" HorizontalAlignment="Left"><ComboBoxItem Content="Русский"/><ComboBoxItem Content="English"/></ComboBox><TextBlock Text="Тема"/><ComboBox Name="ThemeBox" Width="260" HorizontalAlignment="Left"><ComboBoxItem Content="Темная"/><ComboBoxItem Content="Светлая"/><ComboBoxItem Content="Авто"/></ComboBox>
-     <TextBlock Text="Режим подключения"/><ComboBox Name="ModeBox" Width="320" HorizontalAlignment="Left"><ComboBoxItem Content="System proxy"/><ComboBoxItem Content="TUN — в разработке" IsEnabled="False"/></ComboBox>
+     <TextBlock Text="Режим подключения"/><ComboBox Name="ModeBox" Width="320" HorizontalAlignment="Left"><ComboBoxItem Content="System proxy"/><ComboBoxItem Content="TUN"/></ComboBox>
      <TextBlock Text="Локальный SOCKS-порт" Margin="0,12,0,0"/><TextBox Name="PortBox" Width="260" HorizontalAlignment="Left"/>
      <TextBlock Text="DNS-сервер" Margin="0,12,0,0"/><TextBox Name="DnsBox" Width="260" HorizontalAlignment="Left"/>
      <CheckBox Name="AutoStart" Content="Запускать вместе с Windows" Margin="5,15"/><CheckBox Name="StartMinimized" Content="Запускать и сворачивать в системный трей" Margin="5"/>
      <TextBlock Text="ФУНКЦИИ В РАЗРАБОТКЕ · появятся в следующих обновлениях" Foreground="#FFD166" Margin="4,16,0,6"/>
      <CheckBox Name="AutoConnect" Content="Автоподключение — в разработке" IsEnabled="False"/><CheckBox Name="KillSwitch" Content="Kill Switch — в разработке" IsEnabled="False"/><CheckBox Name="DnsProtection" Content="Расширенная защита DNS — в разработке" IsEnabled="False"/><CheckBox Name="EnableIPv6" Content="Управление IPv6 — в разработке" IsEnabled="False"/><CheckBox Name="WebRtcProtection" Content="Защита WebRTC — в разработке" IsEnabled="False"/><CheckBox Name="DnsLeakProtection" Content="Блокировка утечек DNS — в разработке" IsEnabled="False"/><CheckBox Name="CheckUpdates" Content="Автопроверка обновлений — в разработке" IsEnabled="False"/><CheckBox Name="AnonymousStats" Content="Разрешить будущие анонимные отчёты (отправка в разработке)"/>
      <StackPanel Orientation="Horizontal" Margin="0,18,0,0"><Button Name="SaveSettings" Content="Сохранить"/><Button Name="InstallCore" Content="Установить Xray-core"/></StackPanel>
-     <TextBlock Text="TUN требует запуска от имени администратора. Приложение не предоставляет VPN-серверы." Foreground="#858BA8" Margin="4,18"/>
+     <TextBlock Text="TUN перехватывает системный TCP/UDP-трафик и нужен для исключений приложений и игр. Luna запросит права администратора только при подключении в этом режиме." Foreground="#858BA8" TextWrapping="Wrap" Margin="4,18"/>
     </StackPanel></ScrollViewer>
    </Grid>
    <Grid Name="ExpertsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="Для экспертов" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Сейчас полностью поддерживается только Xray-core. Остальные движки появятся в следующих обновлениях." TextWrapping="Wrap" Foreground="#FFD166" Margin="4,8,0,18"/><TextBlock Text="Сетевой движок"/><ComboBox Name="EngineBox" Width="390" HorizontalAlignment="Left"><ComboBoxItem Content="Xray-core"/><ComboBoxItem Content="Sing-box — в разработке" IsEnabled="False"/><ComboBoxItem Content="Clash Meta — в разработке" IsEnabled="False"/><ComboBoxItem Content="Hysteria2 — в разработке" IsEnabled="False"/><ComboBoxItem Content="WireGuard — в разработке" IsEnabled="False"/><ComboBoxItem Content="OpenVPN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="EngineStatus" Text="● Xray-core установлен" Foreground="#65E6A7" Margin="5,8"/><Button Name="ResetSettings" Content="Сбросить все настройки" Width="220" HorizontalAlignment="Left" Margin="0,25,0,0"/></StackPanel></Grid>
-   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.3.5-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
+   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.4.0-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
    <Border Name="LoadingOverlay" Panel.ZIndex="50" Background="#D90B0D16" CornerRadius="14" Visibility="Collapsed">
     <StackPanel Width="360" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Name="LoadingText" Text="Загрузка…" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,14"/><ProgressBar Height="7" IsIndeterminate="True" Foreground="#8C7CFF" Background="#262A43"/></StackPanel>
    </Border>
@@ -1877,10 +1938,96 @@ $Window.Add_SourceInitialized({
     $enabled=1
     [void][LunaDwm]::DwmSetWindowAttribute($handle,20,[ref]$enabled,4)
 })
-$names=@('HomePage','ServersPage','SubsPage','RoutesPage','LogsPage','StatsPage','SplitPage','AppsPage','SettingsPage','ExpertsPage','AboutPage','BrandIcon','AboutIcon','BackendStatusText','UpdateStatusText','LatestNewsText','ChangelogStatusText','NavHome','NavServers','NavSubs','NavRoutes','NavLogs','NavStats','NavSplit','NavApps','NavSettings','NavExperts','NavAbout','CoreStatus','ProtectionDetail','ConnectButton','ConnectLabel','WaveRing','ConnectionStatus','SelectedServer','QuickServer','HomeServerList','HomePingAllButton','HomeModeBox','SessionTime','ModeLabel','HomeUpSpeed','HomeDownSpeed','LatencyLabel','LatencyServerName','LatencyLastCheckedHome','LatencyRefreshHome','LatencyAutoRefresh','GraphValue','JitterLabel','PacketLossLabel','LatencyCanvas','LossCanvas','RouteQualityCard','RouteBaselineButton','RouteCheckButton','RouteDisconnectedMessage','RouteComparisonSummary','RouteQualityList','LoadingOverlay','LoadingText','ToastPanel','ToastTitle','ToastMessage','CloseToast','FixButton','ServerList','ServerLoadStatus','SearchBox','RefreshBackendButton','ImportClipboard','AddLink','PingAllButton','PingButton','DeleteServer','SubscriptionUrl','AddSubscription','UpdateSubscriptions','SubscriptionList','DeleteSubscription','DirectDomains','BlockDomains','BypassLan','BlockAds','SaveRoutes','LogView','LogFilter','LogSearch','LiveLogButton','ExportLogs','ClearLogs','UpSpeed','DownSpeed','ReceivedTotal','SentTotal','SystemUpSpeed','SystemDownSpeed','SystemTrafficTotal','StatIPv4','StatCountry','StatProvider','StatEncryption','SplitAppList','AddSplitApp','RemoveSplitApp','LanguageBox','ThemeBox','ModeBox','PortBox','DnsBox','AutoStart','StartMinimized','AutoConnect','KillSwitch','DnsProtection','EnableIPv6','WebRtcProtection','DnsLeakProtection','CheckUpdates','AnonymousStats','SaveSettings','InstallCore','EngineBox','EngineStatus','ResetSettings')
+$names=@('HomePage','ServersPage','SubsPage','RoutesPage','LogsPage','StatsPage','SplitPage','AppsPage','SettingsPage','ExpertsPage','AboutPage','BrandIcon','AboutIcon','BackendStatusText','UpdateStatusText','LatestNewsText','ChangelogStatusText','NavHome','NavServers','NavSubs','NavRoutes','NavLogs','NavStats','NavSplit','NavApps','NavSettings','NavExperts','NavAbout','CoreStatus','ProtectionDetail','ConnectButton','ConnectLabel','WaveRing','ConnectionStatus','SelectedServer','QuickServer','HomeServerList','HomePingAllButton','HomeModeBox','SessionTime','ModeLabel','HomeUpSpeed','HomeDownSpeed','LatencyLabel','LatencyServerName','LatencyLastCheckedHome','LatencyRefreshHome','LatencyAutoRefresh','GraphValue','JitterLabel','PacketLossLabel','LatencyCanvas','LossCanvas','RouteQualityCard','RouteBaselineButton','RouteCheckButton','RouteDisconnectedMessage','RouteComparisonSummary','RouteQualityList','LoadingOverlay','LoadingText','ToastPanel','ToastTitle','ToastMessage','CloseToast','FixButton','ServerList','ServerLoadStatus','SearchBox','RefreshBackendButton','ImportClipboard','AddLink','PingAllButton','PingButton','DeleteServer','SubscriptionUrl','AddSubscription','UpdateSubscriptions','SubscriptionList','DeleteSubscription','DirectDomains','BlockDomains','BypassLan','BlockAds','SaveRoutes','LogView','LogFilter','LogSearch','LiveLogButton','ExportLogs','ClearLogs','UpSpeed','DownSpeed','ReceivedTotal','SentTotal','SystemUpSpeed','SystemDownSpeed','SystemTrafficTotal','StatIPv4','StatCountry','StatProvider','StatEncryption','SplitEnabled','SplitStatus','SplitDomainInput','SplitDomainList','AddSplitDomain','RemoveSplitDomain','SplitIpInput','SplitIpList','AddSplitIp','RemoveSplitIp','SplitAppList','AddSplitApp','RemoveSplitApp','SplitGameList','AddSplitGame','RemoveSplitGame','ApplySplitRules','ExportSplitRules','ImportSplitRules','ResetSplitRules','LanguageBox','ThemeBox','ModeBox','PortBox','DnsBox','AutoStart','StartMinimized','AutoConnect','KillSwitch','DnsProtection','EnableIPv6','WebRtcProtection','DnsLeakProtection','CheckUpdates','AnonymousStats','SaveSettings','InstallCore','EngineBox','EngineStatus','ResetSettings')
 foreach($n in $names){Set-Variable -Scope Script -Name $n -Value $Window.FindName($n)}
 $script:AppsTraffic=$Window.FindName('AppsTraffic')
 $script:AppsSummary=$Window.FindName('AppsSummary')
+function Test-IsAdministrator {
+    try{
+        $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+        return (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    }catch{return $false}
+}
+function Request-TunElevation {
+    if(Test-IsAdministrator){return $false}
+    if(-not $env:LUNA_EXECUTABLE_PATH){
+        Show-Notice 'Нужны права администратора' 'Запустите Luna.exe от имени администратора для подключения в режиме TUN.' 'WARN'
+        return $true
+    }
+    try{
+        Add-AppLog '[INFO] Для режима TUN запрашиваются права администратора.'
+        Start-Process -FilePath $env:LUNA_EXECUTABLE_PATH -Verb RunAs -ArgumentList '--elevated-tun' | Out-Null
+        $script:AllowExit=$true
+        $Window.Close()
+    }catch{
+        Show-Notice 'TUN не запущен' 'Без разрешения администратора Windows не позволяет создать системный VPN-интерфейс.' 'WARN'
+    }
+    return $true
+}
+function Normalize-SplitDomain([string]$Value) {
+    $value=([string]$Value).Trim().ToLowerInvariant()
+    if(-not $value){throw 'Введите домен сайта.'}
+    if($value -match '^[a-z][a-z0-9+.-]*://'){
+        try{$value=([Uri]$value).DnsSafeHost.ToLowerInvariant()}catch{throw 'Указан некорректный адрес сайта.'}
+    }
+    $wildcard=$value.StartsWith('*.')
+    if($wildcard){$value=$value.Substring(2)}
+    $value=$value.Trim('. ')
+    try{$value=(New-Object Globalization.IdnMapping).GetAscii($value)}catch{throw 'Указан некорректный домен.'}
+    if($value -ne 'localhost' -and ($value.Length -gt 253 -or $value -notmatch '^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')){throw 'Указан некорректный домен.'}
+    if($wildcard){return '*.'+$value}
+    return $value
+}
+function Normalize-SplitIp([string]$Value) {
+    $value=([string]$Value).Trim()
+    if(-not $value){throw 'Введите IP-адрес или CIDR-подсеть.'}
+    $parts=$value.Split('/')
+    if($parts.Count -gt 2){throw 'Некорректный формат IP/CIDR.'}
+    try{$address=[Net.IPAddress]::Parse($parts[0])}catch{throw 'Некорректный IP-адрес.'}
+    if($parts.Count -eq 2){
+        $prefix=0
+        if(-not [int]::TryParse($parts[1],[ref]$prefix)){throw 'Некорректная длина префикса CIDR.'}
+        $max=if($address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork){32}else{128}
+        if($prefix -lt 0 -or $prefix -gt $max){throw "Префикс CIDR должен быть от 0 до $max."}
+        return "$($address.IPAddressToString)/$prefix"
+    }
+    return $address.IPAddressToString
+}
+function Update-SplitView {
+    $SplitEnabled.IsChecked=[bool]$State.settings.splitEnabled
+    $SplitDomainList.ItemsSource=@($State.settings.splitDomains)
+    $SplitIpList.ItemsSource=@($State.settings.splitIps)
+    $SplitAppList.ItemsSource=@($State.settings.splitApps)
+    $SplitGameList.ItemsSource=@($State.settings.splitGames)
+    $count=@($State.settings.splitDomains).Count+@($State.settings.splitIps).Count+@($State.settings.splitApps).Count+@($State.settings.splitGames).Count
+    if([bool]$State.settings.splitEnabled){
+        $SplitStatus.Text="Активно: $count правил. При подключении Luna использует TUN, а выбранный трафик идёт напрямую."
+        $SplitStatus.Foreground='#74E5B2'
+    }else{
+        $SplitStatus.Text="Выключено: сохранено $count правил, но они не применяются."
+        $SplitStatus.Foreground='#AEB4CC'
+    }
+}
+function Add-SplitExecutables([string]$Category) {
+    $dialog=New-Object Microsoft.Win32.OpenFileDialog
+    $dialog.Filter='Приложения и игры (*.exe)|*.exe'
+    $dialog.Multiselect=$true
+    if($dialog.ShowDialog()){
+        $key=if($Category -eq 'game'){'splitGames'}else{'splitApps'}
+        $State.settings[$key]=@($State.settings[$key]+@($dialog.FileNames)|Where-Object {$_}|Select-Object -Unique)
+        Save-State;Update-SplitView
+    }
+}
+function Apply-SplitConfiguration {
+    if([bool]$State.settings.splitEnabled){
+        $State.settings.mode='TUN';$HomeModeBox.SelectedIndex=1;$ModeBox.SelectedIndex=1;$ModeLabel.Text='TUN'
+    }
+    Save-State;Update-SplitView
+    if($script:CoreProcess -and -not $script:CoreProcess.HasExited){
+        Stop-Tunnel
+        Start-Tunnel
+    }else{Show-Notice 'Правила сохранены' 'Они будут применены при следующем подключении Luna.' 'SUCCESS'}
+}
 $script:ToastTimer=New-Object Windows.Threading.DispatcherTimer
 $script:ToastTimer.Interval=[TimeSpan]::FromSeconds(3)
 $script:ToastTimer.Add_Tick({
@@ -2629,6 +2776,7 @@ function Stop-Tunnel {
 }
 function Start-Tunnel {
     $core=Get-CorePath; if(-not $core){Show-Notice 'Требуется компонент' 'Сначала установите Xray-core в настройках.' 'WARN';return}
+    if($State.settings.mode -eq 'TUN' -and (Request-TunElevation)){return}
     $p=$State.profiles|?{$_.id -eq $State.selectedId}|Select-Object -First 1
     if(-not $p){Show-Notice 'Сервер не выбран' 'Добавьте и выберите сервер.' 'WARN';return}
     if($null -ne $p.enabled -and -not [bool]$p.enabled){Show-Notice 'Сервер отключён' 'Этот сервер отключён в локальной конфигурации.' 'WARN';return}
@@ -2644,6 +2792,15 @@ function Start-Tunnel {
             Save-State
         }
         $xrayPort=$freePort+2
+        if($State.settings.mode -eq 'TUN'){
+            $coreWorkingDirectory=Split-Path -Parent $core
+            $wintunTarget=Join-Path $coreWorkingDirectory 'wintun.dll'
+            if(-not (Test-Path $wintunTarget) -and $env:LUNA_APP_DIR){
+                $wintunSource=Join-Path $env:LUNA_APP_DIR 'core\wintun.dll'
+                if(Test-Path $wintunSource){Copy-Item -LiteralPath $wintunSource -Destination $wintunTarget -Force}
+            }
+            if(-not (Test-Path $wintunTarget)){throw 'Не найден wintun.dll. Переустановите Luna или Xray-core.'}
+        }
         $configJson=Build-XrayConfig $p $xrayPort|ConvertTo-Json -Depth 50
         [IO.File]::WriteAllText($ConfigFile,$configJson,(New-Object Text.UTF8Encoding($false)))
         $testOutput=@(& $core run -test -config $ConfigFile 2>&1)
@@ -2760,7 +2917,14 @@ $HomePingAllButton.Add_Click({
     finally{$HomePingAllButton.Content='⚡ Пинг всех';$HomePingAllButton.IsEnabled=$true}
 })
 $HomeModeBox.Add_SelectionChanged({
-    if($HomeModeBox.SelectedIndex -eq 0){$State.settings.mode='System proxy';$ModeBox.SelectedIndex=0;$ModeLabel.Text='System proxy';Save-State}
+    if($HomeModeBox.SelectedIndex -lt 0){return}
+    if($HomeModeBox.SelectedIndex -eq 0 -and [bool]$State.settings.splitEnabled){
+        $HomeModeBox.SelectedIndex=1
+        Show-Notice 'Split Tunneling использует TUN' 'Сначала выключите Split Tunneling, если хотите перейти в System proxy.' 'INFO'
+        return
+    }
+    $State.settings.mode=if($HomeModeBox.SelectedIndex -eq 1){'TUN'}else{'System proxy'}
+    $ModeBox.SelectedIndex=$HomeModeBox.SelectedIndex;$ModeLabel.Text=$State.settings.mode;Save-State
 })
 $LatencyRefreshHome.Add_Click({Start-SelectedLatencyProbe})
 $LatencyAutoRefresh.Add_Checked({$script:SelectedLatencyAutoEnabled=$true;$State.settings.latencyAutoRefresh=$true;Save-State})
@@ -2794,7 +2958,7 @@ $ClearLogs.Add_Click({[IO.File]::WriteAllText($LogFile,'',[Text.UTF8Encoding]::n
 $ExportLogs.Add_Click({$dialog=New-Object Microsoft.Win32.SaveFileDialog;$dialog.Filter='Text files (*.txt)|*.txt';$dialog.FileName="Luna-log-$(Get-Date -Format 'yyyyMMdd-HHmm').txt";if($dialog.ShowDialog()){$content=if(Test-Path $LogFile){Get-Content -Raw $LogFile}else{''};[IO.File]::WriteAllText($dialog.FileName,$content,[Text.UTF8Encoding]::new($true))}})
 $SaveSettings.Add_Click({
     $oldLanguage=$State.settings.language;$oldTheme=$State.settings.theme
-    $State.settings.mode=([string]$ModeBox.SelectedItem.Content);$State.settings.localPort=[int]$PortBox.Text;$State.settings.dns=$DnsBox.Text;$State.settings.autoStart=$AutoStart.IsChecked;$State.settings.startMinimized=$StartMinimized.IsChecked
+    $State.settings.mode=if($ModeBox.SelectedIndex -eq 1){'TUN'}else{'System proxy'};$State.settings.localPort=[int]$PortBox.Text;$State.settings.dns=$DnsBox.Text;$State.settings.autoStart=$AutoStart.IsChecked;$State.settings.startMinimized=$StartMinimized.IsChecked
     $supportedLanguages=@('Русский','English')
     $languageIndex=[Math]::Max(0,[Math]::Min($LanguageBox.SelectedIndex,$supportedLanguages.Count-1))
     $State.settings.language=$supportedLanguages[$languageIndex]
@@ -2809,8 +2973,32 @@ $SaveSettings.Add_Click({
     Save-State;$ModeLabel.Text=$State.settings.mode;$script:SettingsDirty=$false;$SaveSettings.IsEnabled=$false
     if($oldLanguage -ne $State.settings.language -or $oldTheme -ne $State.settings.theme){Show-Notice 'Требуется перезапуск приложения Luna' 'Новый язык и тема применятся после следующего запуска.' 'INFO'}
 })
-$AddSplitApp.Add_Click({$dialog=New-Object Microsoft.Win32.OpenFileDialog;$dialog.Filter='Приложения (*.exe)|*.exe';if($dialog.ShowDialog()){$State.settings.splitApps=@($State.settings.splitApps)+@($dialog.FileName);Save-State;$SplitAppList.ItemsSource=@($State.settings.splitApps)}})
-$RemoveSplitApp.Add_Click({if($SplitAppList.SelectedItem){$remove=[string]$SplitAppList.SelectedItem;$State.settings.splitApps=@($State.settings.splitApps|?{$_ -ne $remove});Save-State;$SplitAppList.ItemsSource=@($State.settings.splitApps)}})
+$SplitEnabled.Add_Checked({
+    $State.settings.splitEnabled=$true;$State.settings.mode='TUN';$HomeModeBox.SelectedIndex=1;$ModeBox.SelectedIndex=1;$ModeLabel.Text='TUN';Save-State;Update-SplitView
+    if(-not $script:InitializingUi){
+        if($script:CoreProcess -and -not $script:CoreProcess.HasExited){Apply-SplitConfiguration}else{Show-Notice 'Split Tunneling включён' 'При подключении Luna запросит права администратора и применит исключения ко всему системному трафику.' 'SUCCESS'}
+    }
+})
+$SplitEnabled.Add_Unchecked({$State.settings.splitEnabled=$false;Save-State;Update-SplitView;if(-not $script:InitializingUi -and $script:CoreProcess -and -not $script:CoreProcess.HasExited){Apply-SplitConfiguration}})
+$AddSplitDomain.Add_Click({try{$value=Normalize-SplitDomain $SplitDomainInput.Text;$State.settings.splitDomains=@($State.settings.splitDomains+$value|Select-Object -Unique);$SplitDomainInput.Text='';Save-State;Update-SplitView}catch{Show-Notice 'Сайт не добавлен' $_.Exception.Message 'WARN'}})
+$RemoveSplitDomain.Add_Click({if($SplitDomainList.SelectedItem){$remove=[string]$SplitDomainList.SelectedItem;$State.settings.splitDomains=@($State.settings.splitDomains|Where-Object {$_ -ne $remove});Save-State;Update-SplitView}})
+$AddSplitIp.Add_Click({try{$value=Normalize-SplitIp $SplitIpInput.Text;$State.settings.splitIps=@($State.settings.splitIps+$value|Select-Object -Unique);$SplitIpInput.Text='';Save-State;Update-SplitView}catch{Show-Notice 'IP не добавлен' $_.Exception.Message 'WARN'}})
+$RemoveSplitIp.Add_Click({if($SplitIpList.SelectedItem){$remove=[string]$SplitIpList.SelectedItem;$State.settings.splitIps=@($State.settings.splitIps|Where-Object {$_ -ne $remove});Save-State;Update-SplitView}})
+$AddSplitApp.Add_Click({Add-SplitExecutables 'app'})
+$RemoveSplitApp.Add_Click({if($SplitAppList.SelectedItem){$remove=[string]$SplitAppList.SelectedItem;$State.settings.splitApps=@($State.settings.splitApps|Where-Object {$_ -ne $remove});Save-State;Update-SplitView}})
+$AddSplitGame.Add_Click({Add-SplitExecutables 'game'})
+$RemoveSplitGame.Add_Click({if($SplitGameList.SelectedItem){$remove=[string]$SplitGameList.SelectedItem;$State.settings.splitGames=@($State.settings.splitGames|Where-Object {$_ -ne $remove});Save-State;Update-SplitView}})
+$ApplySplitRules.Add_Click({Apply-SplitConfiguration})
+$ExportSplitRules.Add_Click({
+    $dialog=New-Object Microsoft.Win32.SaveFileDialog;$dialog.Filter='Luna Split Tunneling (*.json)|*.json';$dialog.FileName="luna-split-rules-$(Get-Date -Format 'yyyyMMdd').json"
+    if($dialog.ShowDialog()){$export=[ordered]@{schema='luna.split.v1';enabled=[bool]$State.settings.splitEnabled;domains=@($State.settings.splitDomains);ips=@($State.settings.splitIps);applications=@($State.settings.splitApps);games=@($State.settings.splitGames)};[IO.File]::WriteAllText($dialog.FileName,($export|ConvertTo-Json -Depth 8),(New-Object Text.UTF8Encoding($false)));Show-Notice 'Экспорт завершён' 'Правила Split Tunneling сохранены.' 'SUCCESS'}
+})
+$ImportSplitRules.Add_Click({
+    $dialog=New-Object Microsoft.Win32.OpenFileDialog;$dialog.Filter='Luna Split Tunneling (*.json)|*.json'
+    if($dialog.ShowDialog()){try{$data=Get-Content -Raw -Encoding UTF8 $dialog.FileName|ConvertFrom-Json;if($data.schema -ne 'luna.split.v1'){throw 'Файл имеет неподдерживаемый формат.'};$domains=@($data.domains|ForEach-Object {Normalize-SplitDomain ([string]$_)});$ips=@($data.ips|ForEach-Object {Normalize-SplitIp ([string]$_)});$apps=@($data.applications|Where-Object {[IO.Path]::GetExtension([string]$_) -ieq '.exe'});$games=@($data.games|Where-Object {[IO.Path]::GetExtension([string]$_) -ieq '.exe'});$State.settings.splitDomains=@($domains|Select-Object -Unique);$State.settings.splitIps=@($ips|Select-Object -Unique);$State.settings.splitApps=@($apps|Select-Object -Unique);$State.settings.splitGames=@($games|Select-Object -Unique);$State.settings.splitEnabled=[bool]$data.enabled;if($State.settings.splitEnabled){$State.settings.mode='TUN'};Save-State;Update-SplitView;Show-Notice 'Импорт завершён' 'Правила проверены и загружены.' 'SUCCESS'}catch{Show-Notice 'Импорт не выполнен' $_.Exception.Message 'ERROR'}}
+})
+$script:SplitResetArmed=$false
+$ResetSplitRules.Add_Click({if(-not $script:SplitResetArmed){$script:SplitResetArmed=$true;$ResetSplitRules.Content='Нажмите ещё раз';return};$State.settings.splitEnabled=$false;$State.settings.splitDomains=@();$State.settings.splitIps=@();$State.settings.splitApps=@();$State.settings.splitGames=@();$script:SplitResetArmed=$false;$ResetSplitRules.Content='Сбросить';Save-State;$script:InitializingUi=$true;Update-SplitView;$script:InitializingUi=$false;if($script:CoreProcess -and -not $script:CoreProcess.HasExited){Apply-SplitConfiguration}else{Show-Notice 'Правила сброшены' 'Все исключения Split Tunneling удалены.' 'SUCCESS'}})
 $EngineBox.Add_SelectionChanged({if($EngineBox.SelectedIndex -gt 0){$EngineStatus.Text='○ Адаптер этого движка не установлен';$EngineStatus.Foreground='#FFD166'}else{$State.settings.engine='Xray-core';$EngineStatus.Text='● Xray-core установлен';$EngineStatus.Foreground='#65E6A7';Save-State}})
 $script:ResetArmed=$false
 $ResetSettings.Add_Click({if(-not $script:ResetArmed){$script:ResetArmed=$true;$ResetSettings.Content='Нажмите ещё раз для полного сброса';return};$script:State=ConvertTo-Hashtable $defaultState;Initialize-ServerCatalog;Save-State;Refresh-Profiles;Refresh-Subscriptions;$ResetSettings.Content='Сброс выполнен';$script:ResetArmed=$false})
@@ -2866,15 +3054,21 @@ $Window.Add_Closing({
 })
 $Window.Add_StateChanged({if($Window.WindowState -eq 'Minimized'){Hide-LunaToTray}})
 
+$script:InitializingUi=$true
 $DirectDomains.Text=$State.settings.directDomains;$BlockDomains.Text=$State.settings.blockDomains;$BypassLan.IsChecked=$State.settings.bypassLan;$BlockAds.IsChecked=$State.settings.blockAds
-$ModeBox.SelectedIndex=0;$HomeModeBox.SelectedIndex=0;$State.settings.mode='System proxy';$PortBox.Text=$State.settings.localPort;$DnsBox.Text=$State.settings.dns;$AutoStart.IsChecked=$State.settings.autoStart;$StartMinimized.IsChecked=$State.settings.startMinimized;$ModeLabel.Text=$State.settings.mode
-$supportedLanguages=@('Русский','English');$savedLanguageIndex=[Array]::IndexOf($supportedLanguages,[string]$State.settings.language);$LanguageBox.SelectedIndex=if($savedLanguageIndex -ge 0){$savedLanguageIndex}else{0};$ThemeBox.SelectedIndex=switch($State.settings.theme){'Светлая'{1}'Авто'{2}default{0}};$AutoConnect.IsChecked=$State.settings.autoConnect;$KillSwitch.IsChecked=$State.settings.killSwitch;$DnsProtection.IsChecked=$State.settings.dnsProtection;$EnableIPv6.IsChecked=$State.settings.enableIPv6;$WebRtcProtection.IsChecked=$State.settings.webRtcProtection;$DnsLeakProtection.IsChecked=$State.settings.dnsLeakProtection;$CheckUpdates.IsChecked=$State.settings.checkUpdates;$AnonymousStats.IsChecked=$State.settings.anonymousStats;$LatencyAutoRefresh.IsChecked=[bool]$State.settings.latencyAutoRefresh;$EngineBox.SelectedIndex=0;$SplitAppList.ItemsSource=@($State.settings.splitApps)
+$modeIndex=if($State.settings.mode -eq 'TUN'){1}else{0};$ModeBox.SelectedIndex=$modeIndex;$HomeModeBox.SelectedIndex=$modeIndex;$State.settings.mode=if($modeIndex -eq 1){'TUN'}else{'System proxy'};$PortBox.Text=$State.settings.localPort;$DnsBox.Text=$State.settings.dns;$AutoStart.IsChecked=$State.settings.autoStart;$StartMinimized.IsChecked=$State.settings.startMinimized;$ModeLabel.Text=$State.settings.mode
+$supportedLanguages=@('Русский','English');$savedLanguageIndex=[Array]::IndexOf($supportedLanguages,[string]$State.settings.language);$LanguageBox.SelectedIndex=if($savedLanguageIndex -ge 0){$savedLanguageIndex}else{0};$ThemeBox.SelectedIndex=switch($State.settings.theme){'Светлая'{1}'Авто'{2}default{0}};$AutoConnect.IsChecked=$State.settings.autoConnect;$KillSwitch.IsChecked=$State.settings.killSwitch;$DnsProtection.IsChecked=$State.settings.dnsProtection;$EnableIPv6.IsChecked=$State.settings.enableIPv6;$WebRtcProtection.IsChecked=$State.settings.webRtcProtection;$DnsLeakProtection.IsChecked=$State.settings.dnsLeakProtection;$CheckUpdates.IsChecked=$State.settings.checkUpdates;$AnonymousStats.IsChecked=$State.settings.anonymousStats;$LatencyAutoRefresh.IsChecked=[bool]$State.settings.latencyAutoRefresh;$EngineBox.SelectedIndex=0;Update-SplitView
+$script:InitializingUi=$false
 if($env:LUNA_PACKAGED -eq '1'){$AutoStart.IsChecked=$false;$AutoStart.IsEnabled=$false;$AutoStart.Content='Автозапуск — управляйте через параметры Windows (Store)'}
 $SaveSettings.IsEnabled=$false
 $markSettingsDirty={$script:SettingsDirty=$true;$SaveSettings.IsEnabled=$true}
 $PortBox.Add_TextChanged($markSettingsDirty);$DnsBox.Add_TextChanged($markSettingsDirty)
 $restartRequiredChanged={& $markSettingsDirty;Show-Notice 'Требуется перезапуск приложения Luna' 'Новый язык или тема применятся после следующего запуска.' 'INFO'}
-$LanguageBox.Add_SelectionChanged($restartRequiredChanged);$ThemeBox.Add_SelectionChanged($restartRequiredChanged);$ModeBox.Add_SelectionChanged($markSettingsDirty)
+$LanguageBox.Add_SelectionChanged($restartRequiredChanged);$ThemeBox.Add_SelectionChanged($restartRequiredChanged);$ModeBox.Add_SelectionChanged({
+    & $markSettingsDirty
+    if($ModeBox.SelectedIndex -eq 0 -and [bool]$State.settings.splitEnabled){$ModeBox.SelectedIndex=1;Show-Notice 'Split Tunneling использует TUN' 'Выключите Split Tunneling перед переходом в System proxy.' 'INFO';return}
+    if($ModeBox.SelectedIndex -ge 0){$State.settings.mode=if($ModeBox.SelectedIndex -eq 1){'TUN'}else{'System proxy'};$HomeModeBox.SelectedIndex=$ModeBox.SelectedIndex;$ModeLabel.Text=$State.settings.mode}
+})
 foreach($settingToggle in @($AutoStart,$StartMinimized,$AutoConnect,$KillSwitch,$DnsProtection,$EnableIPv6,$WebRtcProtection,$DnsLeakProtection,$CheckUpdates,$AnonymousStats)){$settingToggle.Add_Click($markSettingsDirty)}
 Initialize-ServerCatalog;Refresh-CoreStatus;Refresh-Profiles;Refresh-Subscriptions;Initialize-SystemTray;Refresh-RouteQualityView;Update-RouteComparisonSummary;$timer.Start()
 $script:ConsentPromptActive=$false
@@ -2894,6 +3088,9 @@ $Window.Add_ContentRendered({
         [void]$Window.Dispatcher.BeginInvoke([action]{
             if($script:BackendStartupSilent){Sync-LunaBackend -Silent}else{Sync-LunaBackend}
         },[Windows.Threading.DispatcherPriority]::Background)
+    }
+    if($env:LUNA_TUN_AUTOCONNECT -eq '1'){
+        [void]$Window.Dispatcher.BeginInvoke([action]{Start-Tunnel},[Windows.Threading.DispatcherPriority]::Background)
     }
 })
 $script:WpfApplication=[Windows.Application]::Current
