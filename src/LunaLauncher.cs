@@ -13,9 +13,9 @@ using System.Management.Automation.Runspaces;
 [assembly: AssemblyCompany("Luna")]
 [assembly: AssemblyProduct("Luna")]
 [assembly: AssemblyCopyright("Copyright © 2026")]
-[assembly: AssemblyVersion("1.3.3.0")]
-[assembly: AssemblyFileVersion("1.3.3.0")]
-[assembly: AssemblyInformationalVersion("1.3.3-release")]
+[assembly: AssemblyVersion("1.3.4.0")]
+[assembly: AssemblyFileVersion("1.3.4.0")]
+[assembly: AssemblyInformationalVersion("1.3.4-release")]
 
 internal static class LunaLauncher
 {
@@ -84,7 +84,7 @@ internal static class LunaLauncher
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Luna",
                 "runtime",
-                "1.3.3-release");
+                "1.3.4-release");
             Directory.CreateDirectory(runtime);
 
             string script = Path.Combine(runtime, "Luna.ps1");
