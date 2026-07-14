@@ -1,5 +1,5 @@
-# Luna 1.3.4-release — Windows 10/11 proxy/VPN client
-# Luna 1.3.4-release build with route-quality diagnostics.
+# Luna 1.3.5-release — Windows 10/11 proxy/VPN client
+# Luna 1.3.5-release build with controlled selected-server latency refresh.
 [CmdletBinding()]
 param()
 
@@ -1112,7 +1112,7 @@ public static class LunaTrafficMeter
 }
 '@ -ReferencedAssemblies 'System.Net.Http.dll'
 
-$AppVersion = '1.3.4-release'
+$AppVersion = '1.3.5-release'
 $AppRoot = Join-Path $env:LOCALAPPDATA 'Luna'
 $LegacyRoot = Join-Path $env:LOCALAPPDATA 'LumaTunnel'
 $CoreDir = Join-Path $AppRoot 'core'
@@ -1660,7 +1660,7 @@ $xamlText=@'
     <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"><StackPanel>
      <Image Name="BrandIcon" Width="76" Height="76" HorizontalAlignment="Left" Stretch="UniformToFill" Margin="0,0,0,10"/>
      <TextBlock Text="Luna" FontSize="29" FontWeight="SemiBold" Foreground="#FFFFFF"/>
-     <TextBlock Text="VPN · 1.3.4-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
+     <TextBlock Text="VPN · 1.3.5-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
      <Button Name="NavHome" Content="◉  Подключение" HorizontalContentAlignment="Left"/>
      <Button Name="NavServers" Content="◫  Серверы" HorizontalContentAlignment="Left"/>
      <Button Name="NavSubs" Content="↻  Подписки" HorizontalContentAlignment="Left"/>
@@ -1777,7 +1777,7 @@ $xamlText=@'
     </StackPanel></ScrollViewer>
    </Grid>
    <Grid Name="ExpertsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="Для экспертов" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Сейчас полностью поддерживается только Xray-core. Остальные движки появятся в следующих обновлениях." TextWrapping="Wrap" Foreground="#FFD166" Margin="4,8,0,18"/><TextBlock Text="Сетевой движок"/><ComboBox Name="EngineBox" Width="390" HorizontalAlignment="Left"><ComboBoxItem Content="Xray-core"/><ComboBoxItem Content="Sing-box — в разработке" IsEnabled="False"/><ComboBoxItem Content="Clash Meta — в разработке" IsEnabled="False"/><ComboBoxItem Content="Hysteria2 — в разработке" IsEnabled="False"/><ComboBoxItem Content="WireGuard — в разработке" IsEnabled="False"/><ComboBoxItem Content="OpenVPN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="EngineStatus" Text="● Xray-core установлен" Foreground="#65E6A7" Margin="5,8"/><Button Name="ResetSettings" Content="Сбросить все настройки" Width="220" HorizontalAlignment="Left" Margin="0,25,0,0"/></StackPanel></Grid>
-   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.3.4-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
+   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.3.5-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
    <Border Name="LoadingOverlay" Panel.ZIndex="50" Background="#D90B0D16" CornerRadius="14" Visibility="Collapsed">
     <StackPanel Width="360" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Name="LoadingText" Text="Загрузка…" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,14"/><ProgressBar Height="7" IsIndeterminate="True" Foreground="#8C7CFF" Background="#262A43"/></StackPanel>
    </Border>
@@ -2521,13 +2521,17 @@ function Test-LunaVpnSessionActive {
         return [bool]($script:ConnectedAt -and $script:CoreProcess -and -not $script:CoreProcess.HasExited)
     }catch{return $false}
 }
+function Test-SelectedLatencyAutoRefreshAllowed {
+    return [bool]($script:SelectedLatencyAutoEnabled -and $LatencyAutoRefresh.IsChecked -eq $true -and (Test-LunaVpnSessionActive))
+}
 function Start-SelectedLatencyProbe([switch]$Automatic) {
     if($script:SelectedPingTask){return}
-    if($Automatic -and -not (Test-LunaVpnSessionActive)){return}
+    if($Automatic -and -not (Test-SelectedLatencyAutoRefreshAllowed)){return}
     $profile=$State.profiles|Where-Object {$_.id -eq $State.selectedId}|Select-Object -First 1
     if(-not $profile){Update-SelectedLatencyDisplay '—';return}
     $script:SelectedPingProfileId=[string]$profile.id
     $script:SelectedPingAutomatic=[bool]$Automatic
+    $script:SelectedPingGeneration=[int64]$script:SelectedLatencyAutoGeneration
     $LatencyRefreshHome.IsEnabled=$false
     $script:SelectedPingTask=[LunaLatencyProbe]::MeasureTcpAsync([string]$profile.host,[int]$profile.port,3000)
 }
@@ -2539,12 +2543,16 @@ function Complete-SelectedLatencyProbe {
     if($script:SelectedPingButton){$script:SelectedPingButton.Content='↻';$script:SelectedPingButton.IsEnabled=$true;$script:SelectedPingButton=$null}
     $automaticResult=[bool]$script:SelectedPingAutomatic
     $script:SelectedPingAutomatic=$false
-    if($automaticResult -and -not (Test-LunaVpnSessionActive)){return}
+    if($automaticResult -and (-not (Test-SelectedLatencyAutoRefreshAllowed) -or $script:SelectedPingGeneration -ne $script:SelectedLatencyAutoGeneration)){return}
     if($script:SelectedPingProfileId -ne [string]$State.selectedId){return}
     $text=if($ms -lt 0){'таймаут'}else{"$ms ms"}
     $script:LatencyLastCheckedAt=Get-Date
     $profile=$State.profiles|Where-Object {$_.id -eq $State.selectedId}|Select-Object -First 1
     if($profile){$profile.latency=$text;$profile.healthStatus=if($ms -lt 0){'Недоступен'}else{'Доступен'}}
+    [void]$script:LatencyHistory.Add([double]$ms)
+    while($script:LatencyHistory.Count -gt 60){$script:LatencyHistory.RemoveAt(0)}
+    $GraphValue.Text=$text
+    Draw-LatencyGraph
     Update-SelectedLatencyDisplay $text
     Refresh-Profiles
 }
@@ -2605,6 +2613,7 @@ function Test-AllProfileLatencies {
 function Stop-Tunnel {
     Stop-RouteQualityCheck
     $script:RouteVpnResults=@{}
+    $script:SelectedLatencyAutoGeneration=[int64]($script:SelectedLatencyAutoGeneration+1)
     try{[LunaTrafficMeter]::Stop()}catch{}
     if($script:CoreProcess -and -not $script:CoreProcess.HasExited){Stop-Process -Id $script:CoreProcess.Id -Force}
     $script:CoreProcess=$null; Set-SystemProxy $false
@@ -2664,7 +2673,7 @@ function Start-Tunnel {
         Set-TrayStatus "Luna VPN — подключено: $($p.name)"
         $StatCountry.Text="Страна: $(Get-Or $p.country 'не указана')";$StatEncryption.Text="Шифрование: $($p.protocol.ToUpper()) / $(Get-Or $p.extra.security 'none')"
         $StatIPv4.Text='Публичный IPv4: в разработке';$StatProvider.Text='Провайдер: в разработке'
-        Start-ConnectionWave;Start-LatencyProbe;Schedule-RouteQualityCheck
+        Start-ConnectionWave;Schedule-RouteQualityCheck
     }catch{$detail=$_.Exception.Message;Stop-Tunnel;Show-Notice 'Не удалось подключиться' $detail 'ERROR' $true}
 }
 function Update-Subscription($sub) {
@@ -2755,7 +2764,7 @@ $HomeModeBox.Add_SelectionChanged({
 })
 $LatencyRefreshHome.Add_Click({Start-SelectedLatencyProbe})
 $LatencyAutoRefresh.Add_Checked({$script:SelectedLatencyAutoEnabled=$true;$State.settings.latencyAutoRefresh=$true;Save-State})
-$LatencyAutoRefresh.Add_Unchecked({$script:SelectedLatencyAutoEnabled=$false;$State.settings.latencyAutoRefresh=$false;Save-State})
+$LatencyAutoRefresh.Add_Unchecked({$script:SelectedLatencyAutoEnabled=$false;$script:SelectedLatencyAutoGeneration=[int64]($script:SelectedLatencyAutoGeneration+1);$State.settings.latencyAutoRefresh=$false;Save-State})
 $SearchBox.Add_TextChanged({Refresh-Profiles})
 $ImportClipboard.Add_Click({try{$links=Parse-SubscriptionBody ([Windows.Clipboard]::GetText());if(-not $links.Count){$links=@(Parse-ProxyLink ([Windows.Clipboard]::GetText()))};$State.profiles+=@($links);Save-State;Refresh-Profiles;Show-Notice 'Импорт завершён' "Добавлено: $(@($links).Count)" 'SUCCESS'}catch{Show-Notice 'Ошибка импорта' $_.Exception.Message 'ERROR'}})
 $AddLink.Add_Click({$text=[Microsoft.VisualBasic.Interaction]::InputBox('Вставьте ссылку VLESS, VMess, Trojan, Shadowsocks или SOCKS5:','Добавить сервер','');if($text){try{$State.profiles+=,(Parse-ProxyLink $text);Save-State;Refresh-Profiles;Show-Notice 'Сервер добавлен' 'Конфигурация сохранена.' 'SUCCESS'}catch{Show-Notice 'Ошибка импорта' $_.Exception.Message 'ERROR'}}})
@@ -2823,13 +2832,14 @@ $CloseToast.Add_Click({$script:ToastTimer.Stop();$ToastPanel.Visibility='Collaps
 $FixButton.Add_Click({$FixButton.IsEnabled=$false;$FixButton.Content='Исправляем…';try{Stop-Tunnel;Clear-DnsClientCache -ErrorAction SilentlyContinue;Start-Sleep -Milliseconds 400;Start-Tunnel;Show-Notice 'Исправление выполнено' 'DNS-кэш очищен, ядро перезапущено и выполнено переподключение.' 'SUCCESS'}catch{Show-Notice 'Исправление не помогло' $_.Exception.Message 'ERROR'}finally{$FixButton.IsEnabled=$true;$FixButton.Content='Исправить'}})
 
 $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::FromSeconds(1)
-$timer.Add_Tick({if($script:ConnectedAt){$SessionTime.Text=((Get-Date)-$script:ConnectedAt).ToString('hh\:mm\:ss');if($script:CoreProcess.HasExited){Stop-Tunnel}else{Complete-LatencyProbe;Update-SessionStatistics}};Update-RouteQualityState;Update-SystemTrafficStatistics})
+$timer.Add_Tick({if($script:ConnectedAt){$SessionTime.Text=((Get-Date)-$script:ConnectedAt).ToString('hh\:mm\:ss');if($script:CoreProcess.HasExited){Stop-Tunnel}else{Update-SessionStatistics}};Update-RouteQualityState;Update-SystemTrafficStatistics})
 $script:SelectedLatencyTimer=New-Object Windows.Threading.DispatcherTimer
 $script:SelectedLatencyTimer.Interval=[TimeSpan]::FromMilliseconds(670)
 $script:SelectedLatencyAutoEnabled=[bool]$State.settings.latencyAutoRefresh
+$script:SelectedLatencyAutoGeneration=[int64]0
 $script:SelectedLatencyTimer.Add_Tick({
     Complete-SelectedLatencyProbe
-    if($script:SelectedLatencyAutoEnabled -and (Test-LunaVpnSessionActive) -and -not $script:SelectedPingTask){
+    if((Test-SelectedLatencyAutoRefreshAllowed) -and -not $script:SelectedPingTask){
         Start-SelectedLatencyProbe -Automatic
     }
 })
