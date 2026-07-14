@@ -6,13 +6,9 @@ hosts PowerShell in-process without displaying a console window.
 
 Current source version: **1.3.3-release**.
 
-The public website now includes **Luna SpeedTest 2.0** at
-https://security-luna-vpn.ru/speedtest. It performs real multi-stream browser
-measurements and does not require a telemetry token. See
-[`docs/LUNA-SPEEDTEST-2.md`](docs/LUNA-SPEEDTEST-2.md) for the measurement model
-and deployment boundary. Its Luna-themed gauge now includes a cratered moon,
-phase-aware particles, animated energy streams, live result transitions and a
-completion wave, with reduced-motion support.
+Official website: https://security-luna-vpn.ru/
+
+Luna SpeedTest: https://security-luna-vpn.ru/speedtest
 
 ## Features
 
@@ -72,16 +68,8 @@ Example:
 Luna does not include telemetry upload in the current source release. Local
 logs and profiles remain on the device unless the user exports them.
 
-- Website: https://security-luna-vpn.ru/
-- Privacy: https://security-luna-vpn.ru/privacy
 - Telegram: https://t.me/luna_vpnSecurity
 - Email: idontgod22480@gmail.com
-
-## Release synchronization
-
-Every Luna release must update the desktop source, changelog and release notes
-in this repository and publish the matching Installer and Portable files on the
-official website. Previous versions and their history must not be removed.
 
 ## Security
 

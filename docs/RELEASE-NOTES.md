@@ -8,7 +8,6 @@
 
 - Windows 10/11 x64 Installer;
 - Windows 10/11 x64 Portable;
-- сайт Luna и история версий;
 - репозиторий `sohumbles/luna-vpn-windows`.
 
 ## Контроль
