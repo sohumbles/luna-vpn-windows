@@ -18,4 +18,12 @@ The existing website route `/speedtest` uses a deterministic state machine:
 
 The website same-origin API is a functional baseline. High-bandwidth public use should point the server catalog at dedicated Docker speed nodes with known capacity. No VPN credentials, user files, browsing history or traffic contents are collected by the test.
 
+## Visual state model
+
+- The cratered moon and outer scale remain stable so live values do not shift the layout.
+- Download pulls particles toward the gauge centre; upload sends them outward.
+- The energy stream, gauge colour, direction marker and result rows follow the active measurement phase.
+- Successful completion emits two fading waves. Cancellation and failure never display a success animation.
+- `prefers-reduced-motion` disables decorative movement while preserving every measured value and control.
+
 Public endpoint: https://security-luna-vpn.ru/speedtest

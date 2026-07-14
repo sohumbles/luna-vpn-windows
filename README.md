@@ -10,7 +10,9 @@ The public website now includes **Luna SpeedTest 2.0** at
 https://security-luna-vpn.ru/speedtest. It performs real multi-stream browser
 measurements and does not require a telemetry token. See
 [`docs/LUNA-SPEEDTEST-2.md`](docs/LUNA-SPEEDTEST-2.md) for the measurement model
-and deployment boundary.
+and deployment boundary. Its Luna-themed gauge now includes a cratered moon,
+phase-aware particles, animated energy streams, live result transitions and a
+completion wave, with reduced-motion support.
 
 ## Features
 
