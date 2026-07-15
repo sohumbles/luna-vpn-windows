@@ -279,6 +279,36 @@ Invoke-Test 'System Proxy split routing uses PID EXE domains and IPv4 IPv6 CIDR'
     Assert-True (-not [LunaTrafficMeter]::TestRouteDecision('C:\Other.exe', 'example.net', [string[]]@(), [string[]]@('example.com'), [string[]]@())) 'Unmatched traffic must remain on the Xray upstream'
 }
 
+Invoke-Test 'Running process picker resolves durable executable paths' {
+    $applicationPath = @(
+        (Join-Path $PSScriptRoot '..\Luna.ps1'),
+        (Join-Path $PSScriptRoot '..\src\Luna.ps1')
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $applicationSource = Get-Content -Raw -Encoding UTF8 $applicationPath
+    Assert-True ($applicationSource -match 'Name="AddRunningSplitApp"') 'Application card must expose the running-process picker'
+    Assert-True ($applicationSource -match 'Name="AddRunningSplitGame"') 'Game card must expose the running-process picker'
+    Assert-True ($applicationSource -match 'function\s+Get-LunaRunningProcessChoices') 'Process enumeration must be implemented'
+    Assert-True ($applicationSource -match 'function\s+Show-RunningProcessPicker') 'Process picker window must be implemented'
+    Assert-True ($applicationSource -match '\$State\.settings\[\$key\]=@\(\$State\.settings\[\$key\]\+\$paths') 'Selected processes must be stored by executable path'
+    Assert-Equal ((Get-Process -Id $PID).Path.ToLowerInvariant()) ([LunaTrafficMeter]::ResolveProcessPath($PID).ToLowerInvariant()) 'PID must resolve to the full executable path'
+
+    $tokens=$null;$parseErrors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseInput($applicationSource,[ref]$tokens,[ref]$parseErrors)
+    $definition=$ast.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-LunaRunningProcessChoices'},$true)|Select-Object -First 1
+    Invoke-Expression $definition.Extent.Text
+    $script:CoreProcess=$null
+    $child=Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 15' -WindowStyle Hidden -PassThru
+    try{
+        Start-Sleep -Milliseconds 300
+        $choice=@(Get-LunaRunningProcessChoices|Where-Object {$_.PID -eq $child.Id})|Select-Object -First 1
+        Assert-True ($null -ne $choice) 'A user process with an accessible EXE must appear in the picker'
+        Assert-Equal $child.Id ([int]$choice.PID) 'Displayed PID must identify the running instance'
+        Assert-True ([IO.File]::Exists([string]$choice.Path)) 'Displayed process path must point to an existing EXE'
+    }finally{
+        if($child -and -not $child.HasExited){Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue}
+    }
+}
+
 Invoke-Test 'Selective CONNECT proxy bypasses Xray for the owning process' {
     if (-not ('LunaTrafficMeter' -as [type])) { throw 'LunaTrafficMeter test type was not compiled' }
     function Get-EphemeralPort {
@@ -396,7 +426,7 @@ Invoke-Test 'JSON subscription outbound without tag builds in TUN mode' {
 
 $elapsed = [DateTimeOffset]::UtcNow - $script:StartedAt
 Write-Host ''
-Write-Host ('Luna 1.5.0 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
+Write-Host ('Luna 1.5.1 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
 
 if ($script:Failed -ne 0) { exit 1 }
 exit 0

@@ -1,4 +1,4 @@
-# Luna 1.5.0-release — Windows 10/11 proxy/VPN client
+# Luna 1.5.1-release — Windows 10/11 proxy/VPN client
 # Split routing for System Proxy and native Xray TUN modes.
 [CmdletBinding()]
 param()
@@ -1446,6 +1446,11 @@ public static class LunaTrafficMeter
         finally { CloseHandle(handle); }
     }
 
+    public static string ResolveProcessPath(int processId)
+    {
+        return GetProcessPath(processId);
+    }
+
     private static int FindOwningProcess(int clientPort, int proxyPort)
     {
         for (int attempt = 0; attempt < 4; attempt++)
@@ -1511,7 +1516,7 @@ public static class LunaTrafficMeter
 }
 '@ -ReferencedAssemblies 'System.Net.Http.dll'
 
-$AppVersion = '1.5.0-release'
+$AppVersion = '1.5.1-release'
 $AppRoot = Join-Path $env:LOCALAPPDATA 'Luna'
 $LegacyRoot = Join-Path $env:LOCALAPPDATA 'LumaTunnel'
 $CoreDir = Join-Path $AppRoot 'core'
@@ -2131,7 +2136,7 @@ $xamlText=@'
     <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"><StackPanel>
      <Image Name="BrandIcon" Width="76" Height="76" HorizontalAlignment="Left" Stretch="UniformToFill" Margin="0,0,0,10"/>
      <TextBlock Text="Luna" FontSize="29" FontWeight="SemiBold" Foreground="#FFFFFF"/>
-     <TextBlock Text="VPN · 1.5.0-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
+     <TextBlock Text="VPN · 1.5.1-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
      <Button Name="NavHome" Content="◉  Подключение" HorizontalContentAlignment="Left"/>
      <Button Name="NavServers" Content="◫  Серверы" HorizontalContentAlignment="Left"/>
      <Button Name="NavSubs" Content="↻  Подписки" HorizontalContentAlignment="Left"/>
@@ -2240,8 +2245,8 @@ $xamlText=@'
      <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
       <Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Сайты" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Домен и его поддомены будут обходить VPN." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitDomainList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><TextBox Name="SplitDomainInput" Width="220" ToolTip="example.com или *.example.com"/><Button Name="AddSplitDomain" Content="Добавить"/><Button Name="RemoveSplitDomain" Content="Удалить"/></StackPanel></Grid></Border>
       <Border Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="IP-адреса" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Поддерживаются IPv4, IPv6 и CIDR-подсети." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitIpList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><TextBox Name="SplitIpInput" Width="220" ToolTip="203.0.113.7 или 203.0.113.0/24"/><Button Name="AddSplitIp" Content="Добавить"/><Button Name="RemoveSplitIp" Content="Удалить"/></StackPanel></Grid></Border>
-      <Border Grid.Row="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Приложения" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Выберите один или несколько исполняемых файлов .exe." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitAppList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><Button Name="AddSplitApp" Content="+ Добавить .exe"/><Button Name="RemoveSplitApp" Content="Удалить"/></StackPanel></Grid></Border>
-      <Border Grid.Row="1" Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Игры" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Добавьте основной .exe игры и, при необходимости, launcher." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitGameList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><Button Name="AddSplitGame" Content="+ Добавить игру"/><Button Name="RemoveSplitGame" Content="Удалить"/></StackPanel></Grid></Border>
+      <Border Grid.Row="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Приложения" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Выберите .exe на диске или уже запущенный процесс." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitAppList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><WrapPanel Grid.Row="3"><Button Name="AddSplitApp" Content="+ Файл .exe"/><Button Name="AddRunningSplitApp" Content="◉ Запущенный процесс"/><Button Name="RemoveSplitApp" Content="Удалить"/></WrapPanel></Grid></Border>
+      <Border Grid.Row="1" Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Игры" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Выберите .exe игры, launcher или их запущенные процессы." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitGameList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><WrapPanel Grid.Row="3"><Button Name="AddSplitGame" Content="+ Файл игры"/><Button Name="AddRunningSplitGame" Content="◉ Запущенная игра"/><Button Name="RemoveSplitGame" Content="Удалить"/></WrapPanel></Grid></Border>
      </Grid>
      <Border Background="#0B0E29" BorderBrush="#292B63" BorderThickness="1" CornerRadius="12" Padding="13" Margin="4,12"><StackPanel><TextBlock Text="Правила хранятся только на этом ПК. Luna не отправляет список сайтов, IP и пути к приложениям на сервер." Foreground="#AEB4CC" TextWrapping="Wrap"/><TextBlock Text="System proxy: Luna управляет HTTP/HTTPS только у приложений, использующих системный прокси; остальные приложения уже идут напрямую. UDP в этом режиме не перехватывается. TUN: правила охватывают системные TCP/UDP-соединения, IPv4 и IPv6 и требуют права администратора." Foreground="#FFD580" TextWrapping="Wrap" Margin="0,8,0,0"/></StackPanel></Border>
      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Name="ImportSplitRules" Content="Импорт"/><Button Name="ExportSplitRules" Content="Экспорт"/><Button Name="ResetSplitRules" Content="Сбросить"/><Button Name="ApplySplitRules" Content="Применить" Background="#5147B8"/></StackPanel>
@@ -2262,7 +2267,7 @@ $xamlText=@'
     </StackPanel></ScrollViewer>
    </Grid>
    <Grid Name="ExpertsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="Для экспертов" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Сейчас полностью поддерживается только Xray-core. Остальные движки появятся в следующих обновлениях." TextWrapping="Wrap" Foreground="#FFD166" Margin="4,8,0,18"/><TextBlock Text="Сетевой движок"/><ComboBox Name="EngineBox" Width="390" HorizontalAlignment="Left"><ComboBoxItem Content="Xray-core"/><ComboBoxItem Content="Sing-box — в разработке" IsEnabled="False"/><ComboBoxItem Content="Clash Meta — в разработке" IsEnabled="False"/><ComboBoxItem Content="Hysteria2 — в разработке" IsEnabled="False"/><ComboBoxItem Content="WireGuard — в разработке" IsEnabled="False"/><ComboBoxItem Content="OpenVPN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="EngineStatus" Text="● Xray-core установлен" Foreground="#65E6A7" Margin="5,8"/><Button Name="ResetSettings" Content="Сбросить все настройки" Width="220" HorizontalAlignment="Left" Margin="0,25,0,0"/></StackPanel></Grid>
-   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.5.0-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
+   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.5.1-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
    <Border Name="LoadingOverlay" Panel.ZIndex="50" Background="#D90B0D16" CornerRadius="14" Visibility="Collapsed">
     <StackPanel Width="360" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Name="LoadingText" Text="Загрузка…" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,14"/><ProgressBar Height="7" IsIndeterminate="True" Foreground="#8C7CFF" Background="#262A43"/></StackPanel>
    </Border>
@@ -2362,7 +2367,7 @@ $Window.Add_SourceInitialized({
     $enabled=1
     [void][LunaDwm]::DwmSetWindowAttribute($handle,20,[ref]$enabled,4)
 })
-$names=@('HomePage','ServersPage','SubsPage','RoutesPage','LogsPage','StatsPage','SplitPage','AppsPage','SettingsPage','ExpertsPage','AboutPage','BrandIcon','AboutIcon','BackendStatusText','UpdateStatusText','LatestNewsText','ChangelogStatusText','NavHome','NavServers','NavSubs','NavRoutes','NavLogs','NavStats','NavSplit','NavApps','NavSettings','NavExperts','NavAbout','CoreStatus','ProtectionDetail','ConnectButton','ConnectLabel','WaveRing','ConnectionStatus','SelectedServer','QuickServer','HomeServerList','HomePingAllButton','HomeModeBox','SessionTime','ModeLabel','HomeUpSpeed','HomeDownSpeed','LatencyLabel','LatencyServerName','LatencyLastCheckedHome','LatencyRefreshHome','LatencyAutoRefresh','GraphValue','JitterLabel','PacketLossLabel','LatencyCanvas','LossCanvas','RouteQualityCard','RouteBaselineButton','RouteCheckButton','RouteDisconnectedMessage','RouteComparisonSummary','RouteQualityList','LoadingOverlay','LoadingText','ToastPanel','ToastTitle','ToastMessage','CloseToast','FixButton','ServerList','ServerLoadStatus','SearchBox','RefreshBackendButton','ImportClipboard','AddLink','PingAllButton','PingButton','DeleteServer','SubscriptionUrl','AddSubscription','UpdateSubscriptions','SubscriptionList','DeleteSubscription','DirectDomains','BlockDomains','BypassLan','BlockAds','SaveRoutes','LogView','LogFilter','LogSearch','LiveLogButton','ExportLogs','ClearLogs','UpSpeed','DownSpeed','ReceivedTotal','SentTotal','SystemUpSpeed','SystemDownSpeed','SystemTrafficTotal','StatIPv4','StatCountry','StatProvider','StatEncryption','SplitEnabled','SplitStatus','SplitScopeBox','SplitDomainInput','SplitDomainList','AddSplitDomain','RemoveSplitDomain','SplitIpInput','SplitIpList','AddSplitIp','RemoveSplitIp','SplitAppList','AddSplitApp','RemoveSplitApp','SplitGameList','AddSplitGame','RemoveSplitGame','ApplySplitRules','ExportSplitRules','ImportSplitRules','ResetSplitRules','LanguageBox','ThemeBox','ModeBox','PortBox','DnsBox','AutoStart','StartMinimized','AutoConnect','KillSwitch','DnsProtection','EnableIPv6','WebRtcProtection','DnsLeakProtection','CheckUpdates','AnonymousStats','SaveSettings','InstallCore','EngineBox','EngineStatus','ResetSettings')
+$names=@('HomePage','ServersPage','SubsPage','RoutesPage','LogsPage','StatsPage','SplitPage','AppsPage','SettingsPage','ExpertsPage','AboutPage','BrandIcon','AboutIcon','BackendStatusText','UpdateStatusText','LatestNewsText','ChangelogStatusText','NavHome','NavServers','NavSubs','NavRoutes','NavLogs','NavStats','NavSplit','NavApps','NavSettings','NavExperts','NavAbout','CoreStatus','ProtectionDetail','ConnectButton','ConnectLabel','WaveRing','ConnectionStatus','SelectedServer','QuickServer','HomeServerList','HomePingAllButton','HomeModeBox','SessionTime','ModeLabel','HomeUpSpeed','HomeDownSpeed','LatencyLabel','LatencyServerName','LatencyLastCheckedHome','LatencyRefreshHome','LatencyAutoRefresh','GraphValue','JitterLabel','PacketLossLabel','LatencyCanvas','LossCanvas','RouteQualityCard','RouteBaselineButton','RouteCheckButton','RouteDisconnectedMessage','RouteComparisonSummary','RouteQualityList','LoadingOverlay','LoadingText','ToastPanel','ToastTitle','ToastMessage','CloseToast','FixButton','ServerList','ServerLoadStatus','SearchBox','RefreshBackendButton','ImportClipboard','AddLink','PingAllButton','PingButton','DeleteServer','SubscriptionUrl','AddSubscription','UpdateSubscriptions','SubscriptionList','DeleteSubscription','DirectDomains','BlockDomains','BypassLan','BlockAds','SaveRoutes','LogView','LogFilter','LogSearch','LiveLogButton','ExportLogs','ClearLogs','UpSpeed','DownSpeed','ReceivedTotal','SentTotal','SystemUpSpeed','SystemDownSpeed','SystemTrafficTotal','StatIPv4','StatCountry','StatProvider','StatEncryption','SplitEnabled','SplitStatus','SplitScopeBox','SplitDomainInput','SplitDomainList','AddSplitDomain','RemoveSplitDomain','SplitIpInput','SplitIpList','AddSplitIp','RemoveSplitIp','SplitAppList','AddSplitApp','AddRunningSplitApp','RemoveSplitApp','SplitGameList','AddSplitGame','AddRunningSplitGame','RemoveSplitGame','ApplySplitRules','ExportSplitRules','ImportSplitRules','ResetSplitRules','LanguageBox','ThemeBox','ModeBox','PortBox','DnsBox','AutoStart','StartMinimized','AutoConnect','KillSwitch','DnsProtection','EnableIPv6','WebRtcProtection','DnsLeakProtection','CheckUpdates','AnonymousStats','SaveSettings','InstallCore','EngineBox','EngineStatus','ResetSettings')
 foreach($n in $names){Set-Variable -Scope Script -Name $n -Value $Window.FindName($n)}
 $script:AppsTraffic=$Window.FindName('AppsTraffic')
 $script:AppsSummary=$Window.FindName('AppsSummary')
@@ -2443,6 +2448,86 @@ function Add-SplitExecutables([string]$Category) {
         $State.settings[$key]=@($State.settings[$key]+@($dialog.FileNames)|Where-Object {$_}|Select-Object -Unique)
         Save-State;Update-SplitView
     }
+}
+function Get-LunaRunningProcessChoices {
+    $blockedIds=New-Object 'System.Collections.Generic.HashSet[int]'
+    $null=$blockedIds.Add([int]$PID)
+    if($script:CoreProcess -and -not $script:CoreProcess.HasExited){$null=$blockedIds.Add([int]$script:CoreProcess.Id)}
+    $rows=New-Object 'System.Collections.Generic.List[object]'
+    foreach($process in [Diagnostics.Process]::GetProcesses()){
+        try{
+            $processId=[int]$process.Id
+            if($processId -le 4 -or $blockedIds.Contains($processId)){continue}
+            $name=[string]$process.ProcessName
+            if($name -match '^(?i:xray|Luna)$'){continue}
+            $path=[LunaTrafficMeter]::ResolveProcessPath($processId)
+            if([string]::IsNullOrWhiteSpace($path) -or [IO.Path]::GetExtension($path) -ine '.exe' -or -not [IO.File]::Exists($path)){continue}
+            $rows.Add([pscustomobject]@{Name=$name;PID=$processId;Path=$path})
+        }catch{
+            # Protected and short-lived Windows processes are intentionally omitted.
+        }finally{
+            try{$process.Dispose()}catch{}
+        }
+    }
+    return @($rows|Sort-Object Name,PID)
+}
+function Show-RunningProcessPicker([string]$Category) {
+    [xml]$pickerXaml=@"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Запущенные процессы · Luna" Width="940" Height="620" MinWidth="720" MinHeight="460" WindowStartupLocation="CenterOwner" Background="#080B24" Foreground="#F8F7FF" ShowInTaskbar="False">
+ <Window.Resources>
+  <Style TargetType="Button"><Setter Property="Foreground" Value="#F8F7FF"/><Setter Property="Background" Value="#1A1E4C"/><Setter Property="BorderBrush" Value="#4B4295"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="14,8"/><Setter Property="Margin" Value="4"/></Style>
+  <Style TargetType="TextBox"><Setter Property="Foreground" Value="#F8F7FF"/><Setter Property="Background" Value="#101333"/><Setter Property="BorderBrush" Value="#4B4295"/><Setter Property="CaretBrush" Value="#FFFFFF"/><Setter Property="Padding" Value="10,7"/></Style>
+  <Style TargetType="DataGrid"><Setter Property="Foreground" Value="#F8F7FF"/><Setter Property="Background" Value="#0B0E29"/><Setter Property="BorderBrush" Value="#292B63"/><Setter Property="RowBackground" Value="#0B0E29"/><Setter Property="AlternatingRowBackground" Value="#101333"/><Setter Property="HorizontalGridLinesBrush" Value="#202652"/><Setter Property="VerticalGridLinesBrush" Value="#202652"/></Style>
+  <Style TargetType="DataGridColumnHeader"><Setter Property="Foreground" Value="#D9D5FF"/><Setter Property="Background" Value="#171B42"/><Setter Property="BorderBrush" Value="#292B63"/><Setter Property="Padding" Value="10,8"/></Style>
+  <Style TargetType="DataGridRow"><Setter Property="Foreground" Value="#F8F7FF"/><Setter Property="BorderBrush" Value="#202652"/><Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#403684"/><Setter Property="Foreground" Value="#FFFFFF"/></Trigger></Style.Triggers></Style>
+ </Window.Resources>
+ <Grid Margin="20">
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <StackPanel><TextBlock Text="Выбор запущенного процесса" FontSize="25" FontWeight="SemiBold"/><TextBlock Text="Выберите один или несколько процессов. Luna сохранит полный путь EXE, а не временный PID." Foreground="#AEB4CC" Margin="0,5,0,14"/></StackPanel>
+  <Grid Grid.Row="1" Margin="0,0,0,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox Name="ProcessSearch" ToolTip="Поиск по названию, PID или пути"/><Button Name="RefreshProcesses" Grid.Column="1" Content="↻ Обновить"/><TextBlock Name="ProcessCount" Grid.Column="2" Foreground="#BCAEFF" VerticalAlignment="Center" Margin="12,0,4,0"/></Grid>
+  <DataGrid Name="ProcessGrid" Grid.Row="2" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Extended" SelectionUnit="FullRow" AlternationCount="2">
+   <DataGrid.Columns><DataGridTextColumn Header="Процесс" Binding="{Binding Name}" Width="190"/><DataGridTextColumn Header="PID" Binding="{Binding PID}" Width="85"/><DataGridTextColumn Header="Полный путь EXE" Binding="{Binding Path}" Width="*"/></DataGrid.Columns>
+  </DataGrid>
+  <TextBlock Name="ProcessStatus" Grid.Row="3" Text="Защищённые системные процессы и процессы без доступного пути не отображаются." Foreground="#8F96B5" TextWrapping="Wrap" Margin="2,10,2,4"/>
+  <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right"><Button Name="CancelProcessSelection" Content="Отмена"/><Button Name="ConfirmProcessSelection" Content="Добавить выбранные" Background="#5147B8"/></StackPanel>
+ </Grid>
+</Window>
+"@
+    $reader=New-Object Xml.XmlNodeReader $pickerXaml
+    $picker=[Windows.Markup.XamlReader]::Load($reader)
+    $picker.Owner=$Window
+    $ProcessSearch=$picker.FindName('ProcessSearch');$RefreshProcesses=$picker.FindName('RefreshProcesses');$ProcessCount=$picker.FindName('ProcessCount');$ProcessGrid=$picker.FindName('ProcessGrid');$ProcessStatus=$picker.FindName('ProcessStatus');$CancelProcessSelection=$picker.FindName('CancelProcessSelection');$ConfirmProcessSelection=$picker.FindName('ConfirmProcessSelection')
+    $loadProcesses={
+        $items=@(Get-LunaRunningProcessChoices)
+        $picker.Tag=$items
+        $ProcessGrid.ItemsSource=$items
+        $ProcessCount.Text="$($items.Count) доступно"
+        $ProcessStatus.Text=if($items.Count){'Можно выбрать несколько строк с помощью Ctrl или Shift.'}else{'Доступных пользовательских процессов не найдено. Запустите приложение или игру и нажмите «Обновить».'}
+    }.GetNewClosure()
+    $applySearch={
+        $needle=$ProcessSearch.Text.Trim()
+        $items=@($picker.Tag)
+        if($needle){$items=@($items|Where-Object {$_.Name -like "*$needle*" -or ([string]$_.PID) -like "*$needle*" -or $_.Path -like "*$needle*"})}
+        $ProcessGrid.ItemsSource=$items
+        $ProcessCount.Text="$($items.Count) показано"
+    }.GetNewClosure()
+    $commitSelection={
+        $selected=@($ProcessGrid.SelectedItems)
+        if(-not $selected.Count){$ProcessStatus.Text='Сначала выберите хотя бы один процесс.';$ProcessStatus.Foreground='#FFD166';return}
+        $paths=@($selected|ForEach-Object {[string]$_.Path}|Where-Object {$_ -and [IO.File]::Exists($_)}|Select-Object -Unique)
+        if(-not $paths.Count){$ProcessStatus.Text='Выбранные процессы уже завершились или их файлы недоступны. Обновите список.';$ProcessStatus.Foreground='#FF8E9E';return}
+        $key=if($Category -eq 'game'){'splitGames'}else{'splitApps'}
+        $State.settings[$key]=@($State.settings[$key]+$paths|Select-Object -Unique)
+        Save-State;Update-SplitView
+        $picker.DialogResult=$true
+    }.GetNewClosure()
+    $RefreshProcesses.Add_Click($loadProcesses)
+    $ProcessSearch.Add_TextChanged($applySearch)
+    $ConfirmProcessSelection.Add_Click($commitSelection)
+    $ProcessGrid.Add_MouseDoubleClick($commitSelection)
+    $CancelProcessSelection.Add_Click({$picker.DialogResult=$false}.GetNewClosure())
+    & $loadProcesses
+    $null=$picker.ShowDialog()
 }
 function Apply-SplitConfiguration {
     Save-State;Update-SplitView
@@ -3409,8 +3494,10 @@ $RemoveSplitDomain.Add_Click({if($SplitDomainList.SelectedItem){$remove=[string]
 $AddSplitIp.Add_Click({try{$value=Normalize-SplitIp $SplitIpInput.Text;$State.settings.splitIps=@($State.settings.splitIps+$value|Select-Object -Unique);$SplitIpInput.Text='';Save-State;Update-SplitView}catch{Show-Notice 'IP не добавлен' $_.Exception.Message 'WARN'}})
 $RemoveSplitIp.Add_Click({if($SplitIpList.SelectedItem){$remove=[string]$SplitIpList.SelectedItem;$State.settings.splitIps=@($State.settings.splitIps|Where-Object {$_ -ne $remove});Save-State;Update-SplitView}})
 $AddSplitApp.Add_Click({Add-SplitExecutables 'app'})
+$AddRunningSplitApp.Add_Click({Show-RunningProcessPicker 'app'})
 $RemoveSplitApp.Add_Click({if($SplitAppList.SelectedItem){$remove=[string]$SplitAppList.SelectedItem;$State.settings.splitApps=@($State.settings.splitApps|Where-Object {$_ -ne $remove});Save-State;Update-SplitView}})
 $AddSplitGame.Add_Click({Add-SplitExecutables 'game'})
+$AddRunningSplitGame.Add_Click({Show-RunningProcessPicker 'game'})
 $RemoveSplitGame.Add_Click({if($SplitGameList.SelectedItem){$remove=[string]$SplitGameList.SelectedItem;$State.settings.splitGames=@($State.settings.splitGames|Where-Object {$_ -ne $remove});Save-State;Update-SplitView}})
 $ApplySplitRules.Add_Click({Apply-SplitConfiguration})
 $SplitScopeBox.Add_SelectionChanged({
