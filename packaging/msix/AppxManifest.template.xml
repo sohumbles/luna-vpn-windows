@@ -9,7 +9,7 @@
   <Identity
     Name="__PACKAGE_NAME__"
     Publisher="__PUBLISHER__"
-    Version="1.4.1.0"
+    Version="1.5.0.0"
     ProcessorArchitecture="__ARCHITECTURE__" />
 
   <Properties>

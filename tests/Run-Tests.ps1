@@ -255,7 +255,100 @@ Invoke-Test 'Split Tunneling compiles to native Xray TUN routing' {
     Assert-True ($applicationSource -match "splitDomains") 'Website exclusions must be persisted'
     Assert-True ($applicationSource -match "splitIps") 'IP and CIDR exclusions must be persisted'
     Assert-True ($applicationSource -match "Request-TunElevation") 'TUN must request Windows elevation when required'
-    Assert-True ($applicationSource -match "luna\.split\.v1") 'Import/export schema must be versioned'
+    Assert-True ($applicationSource -match "luna\.split\.v2") 'Import/export schema must preserve the selected scope'
+    Assert-True ($applicationSource.Contains('proxy-aware') -and $applicationSource.Contains('UDP')) 'System Proxy limitations must be explicit in the UI'
+    Assert-True ($applicationSource -notmatch 'splitEnabled=\$true;\$State\.settings\.mode=''TUN''') 'Enabling split rules must not force TUN mode'
+}
+
+Invoke-Test 'System Proxy split routing uses PID EXE domains and IPv4 IPv6 CIDR' {
+    $applicationPath = @(
+        (Join-Path $PSScriptRoot '..\Luna.ps1'),
+        (Join-Path $PSScriptRoot '..\src\Luna.ps1')
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $applicationSource = Get-Content -Raw -Encoding UTF8 $applicationPath
+    $embedded = [regex]::Match($applicationSource, "Add-Type -TypeDefinition @'\r?\n(?<code>[\s\S]*?)\r?\n'@ -ReferencedAssemblies 'System.Net.Http.dll'")
+    Assert-True $embedded.Success 'Embedded proxy source must be available'
+    if (-not ('LunaTrafficMeter' -as [type])) {
+        Add-Type -TypeDefinition $embedded.Groups['code'].Value -ReferencedAssemblies 'System.Net.Http.dll'
+    }
+    Assert-True ([LunaTrafficMeter]::TestRouteDecision('C:\Games\LunaTest\game.exe', 'unrelated.test', [string[]]@('C:\Games\LunaTest\game.exe'), [string[]]@(), [string[]]@())) 'Exact executable path must route direct'
+    Assert-True ([LunaTrafficMeter]::TestRouteDecision('C:\Other.exe', 'api.example.com', [string[]]@(), [string[]]@('example.com'), [string[]]@())) 'Domain rule must include subdomains'
+    Assert-True (-not [LunaTrafficMeter]::TestRouteDecision('C:\Other.exe', 'example.com', [string[]]@(), [string[]]@('*.example.com'), [string[]]@())) 'Wildcard must not include the apex'
+    Assert-True ([LunaTrafficMeter]::TestRouteDecision('C:\Other.exe', '203.0.113.29', [string[]]@(), [string[]]@(), [string[]]@('203.0.113.0/24'))) 'IPv4 CIDR must match'
+    Assert-True ([LunaTrafficMeter]::TestRouteDecision('C:\Other.exe', '2001:db8::29', [string[]]@(), [string[]]@(), [string[]]@('2001:db8::/32'))) 'IPv6 CIDR must match'
+    Assert-True (-not [LunaTrafficMeter]::TestRouteDecision('C:\Other.exe', 'example.net', [string[]]@(), [string[]]@('example.com'), [string[]]@())) 'Unmatched traffic must remain on the Xray upstream'
+}
+
+Invoke-Test 'Selective CONNECT proxy bypasses Xray for the owning process' {
+    if (-not ('LunaTrafficMeter' -as [type])) { throw 'LunaTrafficMeter test type was not compiled' }
+    function Get-EphemeralPort {
+        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $listener.Start()
+        $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+        $listener.Stop()
+        return $port
+    }
+    $destinationPort = Get-EphemeralPort
+    $socksListen = Get-EphemeralPort
+    $httpListen = Get-EphemeralPort
+    $destination = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $destinationPort)
+    $destination.Start()
+    try {
+        $ownerPath = (Get-Process -Id $PID).Path
+        [LunaTrafficMeter]::Start($socksListen, (Get-EphemeralPort), $httpListen, (Get-EphemeralPort), [string[]]@($ownerPath), [string[]]@(), [string[]]@())
+        $accept = $destination.AcceptTcpClientAsync()
+        $client = [Net.Sockets.TcpClient]::new()
+        $client.Connect([Net.IPAddress]::Loopback, $httpListen)
+        $stream = $client.GetStream()
+        $request = [Text.Encoding]::ASCII.GetBytes("CONNECT 127.0.0.1:$destinationPort HTTP/1.1`r`nHost: 127.0.0.1:$destinationPort`r`n`r`n")
+        $stream.Write($request, 0, $request.Length)
+        $buffer = New-Object byte[] 256
+        $read = $stream.Read($buffer, 0, $buffer.Length)
+        $response = [Text.Encoding]::ASCII.GetString($buffer, 0, $read)
+        Assert-True ($response.StartsWith('HTTP/1.1 200')) 'Excluded process must receive a direct CONNECT tunnel'
+        Assert-True ($accept.Wait(3000)) 'Direct destination must receive the bypassed connection'
+        $destinationClient = $accept.Result
+        $payload = [Text.Encoding]::ASCII.GetBytes('LUNA-SPLIT')
+        $stream.Write($payload, 0, $payload.Length)
+        $remoteBuffer = New-Object byte[] 32
+        $remoteRead = $destinationClient.GetStream().Read($remoteBuffer, 0, $remoteBuffer.Length)
+        Assert-Equal 'LUNA-SPLIT' ([Text.Encoding]::ASCII.GetString($remoteBuffer, 0, $remoteRead)) 'CONNECT tunnel must relay application bytes directly'
+        $destinationClient.Close();$client.Close()
+    }
+    finally {
+        [LunaTrafficMeter]::Stop()
+        $destination.Stop()
+    }
+}
+
+Invoke-Test 'Unmatched CONNECT proxy request is preserved for Xray upstream' {
+    function Get-ProxyTestPort {
+        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $listener.Start();$port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port;$listener.Stop();return $port
+    }
+    $upstreamPort = Get-ProxyTestPort
+    $socksListen = Get-ProxyTestPort
+    $httpListen = Get-ProxyTestPort
+    $upstream = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $upstreamPort)
+    $upstream.Start()
+    try {
+        [LunaTrafficMeter]::Start($socksListen, (Get-ProxyTestPort), $httpListen, $upstreamPort, [string[]]@(), [string[]]@(), [string[]]@())
+        $accept = $upstream.AcceptTcpClientAsync()
+        $client = [Net.Sockets.TcpClient]::new();$client.Connect([Net.IPAddress]::Loopback, $httpListen)
+        $stream = $client.GetStream()
+        $requestText = "CONNECT example.invalid:443 HTTP/1.1`r`nHost: example.invalid:443`r`n`r`n"
+        $request = [Text.Encoding]::ASCII.GetBytes($requestText);$stream.Write($request, 0, $request.Length)
+        Assert-True ($accept.Wait(3000)) 'Xray upstream must receive unmatched traffic'
+        $upstreamClient = $accept.Result
+        $buffer = New-Object byte[] 512
+        $read = $upstreamClient.GetStream().Read($buffer, 0, $buffer.Length)
+        $received = [Text.Encoding]::ASCII.GetString($buffer, 0, $read)
+        Assert-Equal $requestText $received 'CONNECT authority and headers must be preserved for Xray'
+        $upstreamClient.Close();$client.Close()
+    }
+    finally {
+        [LunaTrafficMeter]::Stop();$upstream.Stop()
+    }
 }
 
 Invoke-Test 'JSON subscription outbound without tag builds in TUN mode' {
@@ -303,7 +396,7 @@ Invoke-Test 'JSON subscription outbound without tag builds in TUN mode' {
 
 $elapsed = [DateTimeOffset]::UtcNow - $script:StartedAt
 Write-Host ''
-Write-Host ('Luna 1.4.1 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
+Write-Host ('Luna 1.5.0 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
 
 if ($script:Failed -ne 0) { exit 1 }
 exit 0

@@ -1,5 +1,5 @@
-# Luna 1.4.1-release — Windows 10/11 proxy/VPN client
-# Native Xray TUN split routing for websites, IPs, applications and games.
+# Luna 1.5.0-release — Windows 10/11 proxy/VPN client
+# Split routing for System Proxy and native Xray TUN modes.
 [CmdletBinding()]
 param()
 
@@ -812,6 +812,9 @@ public static class LunaTrafficMeter
     private static CancellationTokenSource cancellation;
     private static long receivedBytes;
     private static long sentBytes;
+    private static string[] directProcessPaths = new string[0];
+    private static string[] directDomains = new string[0];
+    private static string[] directNetworks = new string[0];
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MibTcpRowOwnerPid
@@ -833,20 +836,42 @@ public static class LunaTrafficMeter
         int tableClass,
         uint reserved);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(
+        uint desiredAccess,
+        bool inheritHandle,
+        int processId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageName(
+        IntPtr process,
+        uint flags,
+        StringBuilder path,
+        ref int size);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+
     public static void Start(
         int socksListenPort,
         int socksTargetPort,
         int httpListenPort,
-        int httpTargetPort)
+        int httpTargetPort,
+        string[] processPaths,
+        string[] domains,
+        string[] networks)
     {
         Stop();
         counters = new ConcurrentDictionary<int, LunaTrafficCounter>();
         Interlocked.Exchange(ref receivedBytes, 0);
         Interlocked.Exchange(ref sentBytes, 0);
+        directProcessPaths = NormalizePaths(processPaths);
+        directDomains = NormalizeRules(domains);
+        directNetworks = NormalizeRules(networks);
         cancellation = new CancellationTokenSource();
 
-        StartRelay(socksListenPort, socksTargetPort, cancellation.Token);
-        StartRelay(httpListenPort, httpTargetPort, cancellation.Token);
+        StartRelay(socksListenPort, socksTargetPort, false, cancellation.Token);
+        StartRelay(httpListenPort, httpTargetPort, true, cancellation.Token);
     }
 
     public static void Stop()
@@ -909,12 +934,13 @@ public static class LunaTrafficMeter
     private static void StartRelay(
         int listenPort,
         int targetPort,
+        bool selectiveHttp,
         CancellationToken token)
     {
         TcpListener listener = new TcpListener(IPAddress.Loopback, listenPort);
         listener.Start();
-        Task acceptTask =
-            Task.Run(() => AcceptLoop(listener, listenPort, targetPort, token));
+        Task acceptTask = Task.Run(() => AcceptLoop(
+            listener, listenPort, targetPort, selectiveHttp, token));
         lock (Gate)
         {
             listeners.Add(listener);
@@ -926,6 +952,7 @@ public static class LunaTrafficMeter
         TcpListener listener,
         int listenPort,
         int targetPort,
+        bool selectiveHttp,
         CancellationToken token)
     {
         while (!token.IsCancellationRequested)
@@ -942,8 +969,8 @@ public static class LunaTrafficMeter
             }
 
             lock (Gate) { clients.Add(client); }
-            Task connectionTask =
-                Task.Run(() => HandleConnection(client, listenPort, targetPort, token));
+            Task connectionTask = Task.Run(() => HandleConnection(
+                client, listenPort, targetPort, selectiveHttp, token));
             lock (Gate) { backgroundTasks.Add(connectionTask); }
         }
     }
@@ -952,6 +979,7 @@ public static class LunaTrafficMeter
         TcpClient client,
         int listenPort,
         int targetPort,
+        bool selectiveHttp,
         CancellationToken token)
     {
         TcpClient target = null;
@@ -968,11 +996,17 @@ public static class LunaTrafficMeter
             Interlocked.Increment(ref counter.ActiveConnections);
             Interlocked.Increment(ref counter.TotalConnections);
 
+            NetworkStream clientStream = client.GetStream();
+            if (selectiveHttp)
+            {
+                await HandleHttpProxyConnection(
+                    clientStream, targetPort, processId, counter, token);
+                return;
+            }
+
             target = new TcpClient(AddressFamily.InterNetwork);
             lock (Gate) { clients.Add(target); }
             await target.ConnectAsync(IPAddress.Loopback, targetPort);
-
-            NetworkStream clientStream = client.GetStream();
             NetworkStream targetStream = target.GetStream();
             Task upload = Pump(
                 clientStream,
@@ -1001,6 +1035,219 @@ public static class LunaTrafficMeter
                 if (target != null) clients.Remove(target);
             }
         }
+    }
+
+    private sealed class HttpRequestHead
+    {
+        public byte[] Bytes;
+        public int HeaderLength;
+        public string Host;
+        public int Port;
+        public bool IsConnect;
+    }
+
+    private static async Task HandleHttpProxyConnection(
+        NetworkStream clientStream,
+        int proxyTargetPort,
+        int processId,
+        LunaTrafficCounter counter,
+        CancellationToken token)
+    {
+        TcpClient target = null;
+        try
+        {
+            HttpRequestHead request = await ReadHttpRequestHead(clientStream, token);
+            if (request == null) return;
+
+            string processPath = GetProcessPath(processId);
+            bool direct = await ShouldRouteDirect(processPath, request.Host);
+            target = new TcpClient();
+            lock (Gate) { clients.Add(target); }
+            if (direct)
+                await target.ConnectAsync(request.Host, request.Port);
+            else
+                await target.ConnectAsync(IPAddress.Loopback, proxyTargetPort);
+
+            NetworkStream targetStream = target.GetStream();
+            if (direct && request.IsConnect)
+            {
+                byte[] established = Encoding.ASCII.GetBytes(
+                    "HTTP/1.1 200 Connection Established\r\n" +
+                    "Proxy-Agent: Luna/1.5\r\n\r\n");
+                await clientStream.WriteAsync(
+                    established, 0, established.Length, token);
+                CountTransfer(counter, false, established.Length);
+                int trailing = request.Bytes.Length - request.HeaderLength;
+                if (trailing > 0)
+                {
+                    await targetStream.WriteAsync(
+                        request.Bytes, request.HeaderLength, trailing, token);
+                    CountTransfer(counter, true, trailing);
+                }
+            }
+            else
+            {
+                byte[] outbound = direct
+                    ? RewriteDirectHttpRequest(request)
+                    : request.Bytes;
+                await targetStream.WriteAsync(outbound, 0, outbound.Length, token);
+                CountTransfer(counter, true, outbound.Length);
+            }
+
+            Task upload = Pump(clientStream, targetStream, counter, true, token);
+            Task download = Pump(targetStream, clientStream, counter, false, token);
+            await Task.WhenAll(upload, download);
+        }
+        catch
+        {
+            try
+            {
+                byte[] failed = Encoding.ASCII.GetBytes(
+                    "HTTP/1.1 502 Bad Gateway\r\n" +
+                    "Connection: close\r\nContent-Length: 0\r\n\r\n");
+                clientStream.Write(failed, 0, failed.Length);
+            }
+            catch { }
+        }
+        finally
+        {
+            try { if (target != null) target.Close(); } catch { }
+            lock (Gate) { if (target != null) clients.Remove(target); }
+        }
+    }
+
+    private static async Task<HttpRequestHead> ReadHttpRequestHead(
+        NetworkStream stream,
+        CancellationToken token)
+    {
+        MemoryStream buffer = new MemoryStream();
+        byte[] chunk = new byte[4096];
+        int headerLength = -1;
+        while (buffer.Length < 65536 && headerLength < 0)
+        {
+            int count = await stream.ReadAsync(chunk, 0, chunk.Length, token);
+            if (count <= 0) return null;
+            buffer.Write(chunk, 0, count);
+            headerLength = FindHeaderEnd(buffer.ToArray());
+        }
+        if (headerLength < 0) return null;
+
+        byte[] bytes = buffer.ToArray();
+        string headers = Encoding.ASCII.GetString(bytes, 0, headerLength);
+        string[] lines = headers.Split(new[] { "\r\n" }, StringSplitOptions.None);
+        if (lines.Length == 0) return null;
+        string[] first = lines[0].Split(new[] { ' ' }, 3);
+        if (first.Length < 2) return null;
+
+        bool connect = first[0].Equals("CONNECT", StringComparison.OrdinalIgnoreCase);
+        string host;
+        int port;
+        if (connect)
+        {
+            if (!TryParseAuthority(first[1], 443, out host, out port)) return null;
+        }
+        else
+        {
+            Uri uri;
+            if (Uri.TryCreate(first[1], UriKind.Absolute, out uri))
+            {
+                host = uri.Host;
+                port = uri.IsDefaultPort
+                    ? (uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)
+                        ? 443 : 80)
+                    : uri.Port;
+            }
+            else
+            {
+                string hostHeader = lines.FirstOrDefault(line =>
+                    line.StartsWith("Host:", StringComparison.OrdinalIgnoreCase));
+                if (hostHeader == null || !TryParseAuthority(
+                    hostHeader.Substring(5).Trim(), 80, out host, out port))
+                    return null;
+            }
+        }
+
+        return new HttpRequestHead
+        {
+            Bytes = bytes,
+            HeaderLength = headerLength,
+            Host = host,
+            Port = port,
+            IsConnect = connect
+        };
+    }
+
+    private static int FindHeaderEnd(byte[] bytes)
+    {
+        for (int index = 3; index < bytes.Length; index++)
+        {
+            if (bytes[index - 3] == 13 && bytes[index - 2] == 10 &&
+                bytes[index - 1] == 13 && bytes[index] == 10)
+                return index + 1;
+        }
+        return -1;
+    }
+
+    private static bool TryParseAuthority(
+        string authority,
+        int defaultPort,
+        out string host,
+        out int port)
+    {
+        host = null;
+        port = defaultPort;
+        authority = (authority ?? String.Empty).Trim();
+        if (authority.StartsWith("[", StringComparison.Ordinal))
+        {
+            int closing = authority.IndexOf(']');
+            if (closing <= 1) return false;
+            host = authority.Substring(1, closing - 1);
+            if (closing + 1 < authority.Length && authority[closing + 1] == ':')
+            {
+                int parsed;
+                if (Int32.TryParse(authority.Substring(closing + 2), out parsed))
+                    port = parsed;
+            }
+            return port > 0 && port <= 65535;
+        }
+
+        int separator = authority.LastIndexOf(':');
+        if (separator > 0 && authority.IndexOf(':') == separator)
+        {
+            int parsed;
+            if (Int32.TryParse(authority.Substring(separator + 1), out parsed))
+            {
+                port = parsed;
+                authority = authority.Substring(0, separator);
+            }
+        }
+        host = authority.TrimEnd('.');
+        return host.Length > 0 && port > 0 && port <= 65535;
+    }
+
+    private static byte[] RewriteDirectHttpRequest(HttpRequestHead request)
+    {
+        string text = Encoding.ASCII.GetString(
+            request.Bytes, 0, request.HeaderLength);
+        int lineEnd = text.IndexOf("\r\n", StringComparison.Ordinal);
+        string firstLine = lineEnd >= 0 ? text.Substring(0, lineEnd) : text;
+        string[] first = firstLine.Split(new[] { ' ' }, 3);
+        Uri uri;
+        if (first.Length >= 3 && Uri.TryCreate(first[1], UriKind.Absolute, out uri))
+        {
+            string path = String.IsNullOrEmpty(uri.PathAndQuery)
+                ? "/" : uri.PathAndQuery;
+            string replacement = first[0] + " " + path + " " + first[2];
+            text = replacement + text.Substring(firstLine.Length);
+        }
+        byte[] header = Encoding.ASCII.GetBytes(text);
+        int trailing = request.Bytes.Length - request.HeaderLength;
+        if (trailing <= 0) return header;
+        byte[] result = new byte[header.Length + trailing];
+        Buffer.BlockCopy(header, 0, result, 0, header.Length);
+        Buffer.BlockCopy(
+            request.Bytes, request.HeaderLength, result, header.Length, trailing);
+        return result;
     }
 
     private static async Task Pump(
@@ -1034,6 +1281,136 @@ public static class LunaTrafficMeter
         }
     }
 
+    private static async Task<bool> ShouldRouteDirect(
+        string processPath,
+        string host)
+    {
+        if (!String.IsNullOrWhiteSpace(processPath) &&
+            directProcessPaths.Any(path => String.Equals(
+                path, processPath, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        string normalizedHost = (host ?? String.Empty).Trim('[', ']', '.', ' ')
+            .ToLowerInvariant();
+        if (directDomains.Any(rule => DomainMatches(normalizedHost, rule)))
+            return true;
+
+        IPAddress literal;
+        if (IPAddress.TryParse(normalizedHost, out literal))
+            return directNetworks.Any(rule => NetworkContains(rule, literal));
+
+        if (directNetworks.Length == 0) return false;
+        try
+        {
+            IPAddress[] resolved = await Dns.GetHostAddressesAsync(normalizedHost);
+            return resolved.Any(address =>
+                directNetworks.Any(rule => NetworkContains(rule, address)));
+        }
+        catch { return false; }
+    }
+
+    public static bool TestRouteDecision(
+        string processPath,
+        string host,
+        string[] processPaths,
+        string[] domains,
+        string[] networks)
+    {
+        string[] oldPaths = directProcessPaths;
+        string[] oldDomains = directDomains;
+        string[] oldNetworks = directNetworks;
+        try
+        {
+            directProcessPaths = NormalizePaths(processPaths);
+            directDomains = NormalizeRules(domains);
+            directNetworks = NormalizeRules(networks);
+            return ShouldRouteDirect(processPath, host).GetAwaiter().GetResult();
+        }
+        finally
+        {
+            directProcessPaths = oldPaths;
+            directDomains = oldDomains;
+            directNetworks = oldNetworks;
+        }
+    }
+
+    private static bool DomainMatches(string host, string rule)
+    {
+        rule = (rule ?? String.Empty).Trim().TrimEnd('.').ToLowerInvariant();
+        bool wildcard = rule.StartsWith("*.", StringComparison.Ordinal);
+        if (wildcard) rule = rule.Substring(2);
+        if (rule.Length == 0) return false;
+        if (wildcard)
+            return host.EndsWith("." + rule, StringComparison.OrdinalIgnoreCase);
+        return String.Equals(host, rule, StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith("." + rule, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool NetworkContains(string rule, IPAddress address)
+    {
+        try
+        {
+            string[] parts = (rule ?? String.Empty).Split('/');
+            IPAddress network = IPAddress.Parse(parts[0]);
+            if (network.AddressFamily != address.AddressFamily) return false;
+            byte[] networkBytes = network.GetAddressBytes();
+            byte[] addressBytes = address.GetAddressBytes();
+            int prefix = parts.Length == 2
+                ? Int32.Parse(parts[1])
+                : networkBytes.Length * 8;
+            if (prefix < 0 || prefix > networkBytes.Length * 8) return false;
+            for (int index = 0; index < networkBytes.Length; index++)
+            {
+                int remaining = prefix - index * 8;
+                if (remaining <= 0) break;
+                int bits = Math.Min(8, remaining);
+                int mask = 0xFF << (8 - bits);
+                if ((networkBytes[index] & mask) != (addressBytes[index] & mask))
+                    return false;
+            }
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private static string[] NormalizePaths(string[] values)
+    {
+        if (values == null) return new string[0];
+        return values
+            .Where(value => !String.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim().Replace('/', '\\'))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string[] NormalizeRules(string[] values)
+    {
+        if (values == null) return new string[0];
+        return values
+            .Where(value => !String.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static void CountTransfer(
+        LunaTrafficCounter counter,
+        bool upload,
+        int count)
+    {
+        if (count <= 0 || counter == null) return;
+        if (upload)
+        {
+            Interlocked.Add(ref sentBytes, count);
+            Interlocked.Add(ref counter.SentBytes, count);
+        }
+        else
+        {
+            Interlocked.Add(ref receivedBytes, count);
+            Interlocked.Add(ref counter.ReceivedBytes, count);
+        }
+    }
+
     private static string GetProcessName(int processId)
     {
         if (processId <= 0) return "Неизвестное приложение";
@@ -1045,6 +1422,28 @@ public static class LunaTrafficMeter
         {
             return "PID " + processId;
         }
+    }
+
+    private static string GetProcessPath(int processId)
+    {
+        if (processId <= 0) return String.Empty;
+        try
+        {
+            Process process = Process.GetProcessById(processId);
+            return process.MainModule == null
+                ? String.Empty : process.MainModule.FileName;
+        }
+        catch { }
+        IntPtr handle = OpenProcess(0x1000, false, processId);
+        if (handle == IntPtr.Zero) return String.Empty;
+        try
+        {
+            StringBuilder path = new StringBuilder(32768);
+            int length = path.Capacity;
+            return QueryFullProcessImageName(handle, 0, path, ref length)
+                ? path.ToString() : String.Empty;
+        }
+        finally { CloseHandle(handle); }
     }
 
     private static int FindOwningProcess(int clientPort, int proxyPort)
@@ -1112,7 +1511,7 @@ public static class LunaTrafficMeter
 }
 '@ -ReferencedAssemblies 'System.Net.Http.dll'
 
-$AppVersion = '1.4.1-release'
+$AppVersion = '1.5.0-release'
 $AppRoot = Join-Path $env:LOCALAPPDATA 'Luna'
 $LegacyRoot = Join-Path $env:LOCALAPPDATA 'LumaTunnel'
 $CoreDir = Join-Path $AppRoot 'core'
@@ -1732,7 +2131,7 @@ $xamlText=@'
     <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"><StackPanel>
      <Image Name="BrandIcon" Width="76" Height="76" HorizontalAlignment="Left" Stretch="UniformToFill" Margin="0,0,0,10"/>
      <TextBlock Text="Luna" FontSize="29" FontWeight="SemiBold" Foreground="#FFFFFF"/>
-     <TextBlock Text="VPN · 1.4.1-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
+     <TextBlock Text="VPN · 1.5.0-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
      <Button Name="NavHome" Content="◉  Подключение" HorizontalContentAlignment="Left"/>
      <Button Name="NavServers" Content="◫  Серверы" HorizontalContentAlignment="Left"/>
      <Button Name="NavSubs" Content="↻  Подписки" HorizontalContentAlignment="Left"/>
@@ -1837,14 +2236,14 @@ $xamlText=@'
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel>
      <TextBlock Text="Split Tunneling" FontSize="30" FontWeight="SemiBold"/>
      <TextBlock Text="Выбранный трафик идёт напрямую, остальной — через VPN Luna." Foreground="#9EA5C2" Margin="0,4,0,14"/>
-     <Border Background="#101333" BorderBrush="#4B4295" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><CheckBox Name="SplitEnabled" Content="Включить контролируемое исключение трафика" FontSize="17" FontWeight="SemiBold"/><TextBlock Name="SplitStatus" Text="Выключено. Весь поддерживаемый трафик использует обычный маршрут Luna." Foreground="#AEB4CC" TextWrapping="Wrap" Margin="4,7,18,0"/></StackPanel><Border Grid.Column="1" Background="#241F58" CornerRadius="10" Padding="12,8" VerticalAlignment="Center"><TextBlock Text="TUN · нужны права администратора" Foreground="#CDBFFF"/></Border></Grid></Border>
+     <Border Background="#101333" BorderBrush="#4B4295" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="360"/></Grid.ColumnDefinitions><StackPanel><CheckBox Name="SplitEnabled" Content="Включить контролируемое исключение трафика" FontSize="17" FontWeight="SemiBold"/><TextBlock Name="SplitStatus" Text="Выключено. Весь поддерживаемый трафик использует обычный маршрут Luna." Foreground="#AEB4CC" TextWrapping="Wrap" Margin="4,7,18,0"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="ОБЛАСТЬ ДЕЙСТВИЯ" Foreground="#BCAEFF" FontSize="11"/><ComboBox Name="SplitScopeBox" Margin="0,6,0,0"><ComboBoxItem Content="System proxy · HTTP/HTTPS приложений"/><ComboBoxItem Content="TUN · весь системный трафик"/></ComboBox></StackPanel></Grid></Border>
      <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
       <Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Сайты" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Домен и его поддомены будут обходить VPN." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitDomainList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><TextBox Name="SplitDomainInput" Width="220" ToolTip="example.com или *.example.com"/><Button Name="AddSplitDomain" Content="Добавить"/><Button Name="RemoveSplitDomain" Content="Удалить"/></StackPanel></Grid></Border>
       <Border Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="IP-адреса" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Поддерживаются IPv4, IPv6 и CIDR-подсети." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitIpList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><TextBox Name="SplitIpInput" Width="220" ToolTip="203.0.113.7 или 203.0.113.0/24"/><Button Name="AddSplitIp" Content="Добавить"/><Button Name="RemoveSplitIp" Content="Удалить"/></StackPanel></Grid></Border>
       <Border Grid.Row="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Приложения" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Выберите один или несколько исполняемых файлов .exe." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitAppList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><Button Name="AddSplitApp" Content="+ Добавить .exe"/><Button Name="RemoveSplitApp" Content="Удалить"/></StackPanel></Grid></Border>
       <Border Grid.Row="1" Grid.Column="1" Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="14" Margin="4"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="170"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Игры" FontSize="19" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Добавьте основной .exe игры и, при необходимости, launcher." Foreground="#9EA5C2" FontSize="11"/><ListBox Name="SplitGameList" Grid.Row="2" Background="#0B0E29" Margin="0,9"/><StackPanel Grid.Row="3" Orientation="Horizontal"><Button Name="AddSplitGame" Content="+ Добавить игру"/><Button Name="RemoveSplitGame" Content="Удалить"/></StackPanel></Grid></Border>
      </Grid>
-     <Border Background="#0B0E29" BorderBrush="#292B63" BorderThickness="1" CornerRadius="12" Padding="13" Margin="4,12"><TextBlock Text="Правила хранятся только на этом ПК. Luna не отправляет список сайтов, IP и пути к приложениям на сервер." Foreground="#AEB4CC" TextWrapping="Wrap"/></Border>
+     <Border Background="#0B0E29" BorderBrush="#292B63" BorderThickness="1" CornerRadius="12" Padding="13" Margin="4,12"><StackPanel><TextBlock Text="Правила хранятся только на этом ПК. Luna не отправляет список сайтов, IP и пути к приложениям на сервер." Foreground="#AEB4CC" TextWrapping="Wrap"/><TextBlock Text="System proxy: Luna управляет HTTP/HTTPS только у приложений, использующих системный прокси; остальные приложения уже идут напрямую. UDP в этом режиме не перехватывается. TUN: правила охватывают системные TCP/UDP-соединения, IPv4 и IPv6 и требуют права администратора." Foreground="#FFD580" TextWrapping="Wrap" Margin="0,8,0,0"/></StackPanel></Border>
      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Name="ImportSplitRules" Content="Импорт"/><Button Name="ExportSplitRules" Content="Экспорт"/><Button Name="ResetSplitRules" Content="Сбросить"/><Button Name="ApplySplitRules" Content="Применить" Background="#5147B8"/></StackPanel>
     </StackPanel></ScrollViewer>
    </Grid>
@@ -1859,11 +2258,11 @@ $xamlText=@'
      <TextBlock Text="ФУНКЦИИ В РАЗРАБОТКЕ · появятся в следующих обновлениях" Foreground="#FFD166" Margin="4,16,0,6"/>
      <CheckBox Name="AutoConnect" Content="Автоподключение — в разработке" IsEnabled="False"/><CheckBox Name="KillSwitch" Content="Kill Switch — в разработке" IsEnabled="False"/><CheckBox Name="DnsProtection" Content="Расширенная защита DNS — в разработке" IsEnabled="False"/><CheckBox Name="EnableIPv6" Content="Управление IPv6 — в разработке" IsEnabled="False"/><CheckBox Name="WebRtcProtection" Content="Защита WebRTC — в разработке" IsEnabled="False"/><CheckBox Name="DnsLeakProtection" Content="Блокировка утечек DNS — в разработке" IsEnabled="False"/><CheckBox Name="CheckUpdates" Content="Автопроверка обновлений — в разработке" IsEnabled="False"/><CheckBox Name="AnonymousStats" Content="Разрешить будущие анонимные отчёты (отправка в разработке)"/>
      <StackPanel Orientation="Horizontal" Margin="0,18,0,0"><Button Name="SaveSettings" Content="Сохранить"/><Button Name="InstallCore" Content="Установить Xray-core"/></StackPanel>
-     <TextBlock Text="TUN перехватывает системный TCP/UDP-трафик и нужен для исключений приложений и игр. Luna запросит права администратора только при подключении в этом режиме." Foreground="#858BA8" TextWrapping="Wrap" Margin="4,18"/>
+     <TextBlock Text="System proxy поддерживает исключения сайтов, IP, приложений и игр для proxy-aware HTTP/HTTPS. TUN перехватывает системный TCP/UDP-трафик. Luna запросит права администратора только для TUN." Foreground="#858BA8" TextWrapping="Wrap" Margin="4,18"/>
     </StackPanel></ScrollViewer>
    </Grid>
    <Grid Name="ExpertsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="Для экспертов" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Сейчас полностью поддерживается только Xray-core. Остальные движки появятся в следующих обновлениях." TextWrapping="Wrap" Foreground="#FFD166" Margin="4,8,0,18"/><TextBlock Text="Сетевой движок"/><ComboBox Name="EngineBox" Width="390" HorizontalAlignment="Left"><ComboBoxItem Content="Xray-core"/><ComboBoxItem Content="Sing-box — в разработке" IsEnabled="False"/><ComboBoxItem Content="Clash Meta — в разработке" IsEnabled="False"/><ComboBoxItem Content="Hysteria2 — в разработке" IsEnabled="False"/><ComboBoxItem Content="WireGuard — в разработке" IsEnabled="False"/><ComboBoxItem Content="OpenVPN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="EngineStatus" Text="● Xray-core установлен" Foreground="#65E6A7" Margin="5,8"/><Button Name="ResetSettings" Content="Сбросить все настройки" Width="220" HorizontalAlignment="Left" Margin="0,25,0,0"/></StackPanel></Grid>
-   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.4.1-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
+   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.5.0-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
    <Border Name="LoadingOverlay" Panel.ZIndex="50" Background="#D90B0D16" CornerRadius="14" Visibility="Collapsed">
     <StackPanel Width="360" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Name="LoadingText" Text="Загрузка…" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,14"/><ProgressBar Height="7" IsIndeterminate="True" Foreground="#8C7CFF" Background="#262A43"/></StackPanel>
    </Border>
@@ -1963,7 +2362,7 @@ $Window.Add_SourceInitialized({
     $enabled=1
     [void][LunaDwm]::DwmSetWindowAttribute($handle,20,[ref]$enabled,4)
 })
-$names=@('HomePage','ServersPage','SubsPage','RoutesPage','LogsPage','StatsPage','SplitPage','AppsPage','SettingsPage','ExpertsPage','AboutPage','BrandIcon','AboutIcon','BackendStatusText','UpdateStatusText','LatestNewsText','ChangelogStatusText','NavHome','NavServers','NavSubs','NavRoutes','NavLogs','NavStats','NavSplit','NavApps','NavSettings','NavExperts','NavAbout','CoreStatus','ProtectionDetail','ConnectButton','ConnectLabel','WaveRing','ConnectionStatus','SelectedServer','QuickServer','HomeServerList','HomePingAllButton','HomeModeBox','SessionTime','ModeLabel','HomeUpSpeed','HomeDownSpeed','LatencyLabel','LatencyServerName','LatencyLastCheckedHome','LatencyRefreshHome','LatencyAutoRefresh','GraphValue','JitterLabel','PacketLossLabel','LatencyCanvas','LossCanvas','RouteQualityCard','RouteBaselineButton','RouteCheckButton','RouteDisconnectedMessage','RouteComparisonSummary','RouteQualityList','LoadingOverlay','LoadingText','ToastPanel','ToastTitle','ToastMessage','CloseToast','FixButton','ServerList','ServerLoadStatus','SearchBox','RefreshBackendButton','ImportClipboard','AddLink','PingAllButton','PingButton','DeleteServer','SubscriptionUrl','AddSubscription','UpdateSubscriptions','SubscriptionList','DeleteSubscription','DirectDomains','BlockDomains','BypassLan','BlockAds','SaveRoutes','LogView','LogFilter','LogSearch','LiveLogButton','ExportLogs','ClearLogs','UpSpeed','DownSpeed','ReceivedTotal','SentTotal','SystemUpSpeed','SystemDownSpeed','SystemTrafficTotal','StatIPv4','StatCountry','StatProvider','StatEncryption','SplitEnabled','SplitStatus','SplitDomainInput','SplitDomainList','AddSplitDomain','RemoveSplitDomain','SplitIpInput','SplitIpList','AddSplitIp','RemoveSplitIp','SplitAppList','AddSplitApp','RemoveSplitApp','SplitGameList','AddSplitGame','RemoveSplitGame','ApplySplitRules','ExportSplitRules','ImportSplitRules','ResetSplitRules','LanguageBox','ThemeBox','ModeBox','PortBox','DnsBox','AutoStart','StartMinimized','AutoConnect','KillSwitch','DnsProtection','EnableIPv6','WebRtcProtection','DnsLeakProtection','CheckUpdates','AnonymousStats','SaveSettings','InstallCore','EngineBox','EngineStatus','ResetSettings')
+$names=@('HomePage','ServersPage','SubsPage','RoutesPage','LogsPage','StatsPage','SplitPage','AppsPage','SettingsPage','ExpertsPage','AboutPage','BrandIcon','AboutIcon','BackendStatusText','UpdateStatusText','LatestNewsText','ChangelogStatusText','NavHome','NavServers','NavSubs','NavRoutes','NavLogs','NavStats','NavSplit','NavApps','NavSettings','NavExperts','NavAbout','CoreStatus','ProtectionDetail','ConnectButton','ConnectLabel','WaveRing','ConnectionStatus','SelectedServer','QuickServer','HomeServerList','HomePingAllButton','HomeModeBox','SessionTime','ModeLabel','HomeUpSpeed','HomeDownSpeed','LatencyLabel','LatencyServerName','LatencyLastCheckedHome','LatencyRefreshHome','LatencyAutoRefresh','GraphValue','JitterLabel','PacketLossLabel','LatencyCanvas','LossCanvas','RouteQualityCard','RouteBaselineButton','RouteCheckButton','RouteDisconnectedMessage','RouteComparisonSummary','RouteQualityList','LoadingOverlay','LoadingText','ToastPanel','ToastTitle','ToastMessage','CloseToast','FixButton','ServerList','ServerLoadStatus','SearchBox','RefreshBackendButton','ImportClipboard','AddLink','PingAllButton','PingButton','DeleteServer','SubscriptionUrl','AddSubscription','UpdateSubscriptions','SubscriptionList','DeleteSubscription','DirectDomains','BlockDomains','BypassLan','BlockAds','SaveRoutes','LogView','LogFilter','LogSearch','LiveLogButton','ExportLogs','ClearLogs','UpSpeed','DownSpeed','ReceivedTotal','SentTotal','SystemUpSpeed','SystemDownSpeed','SystemTrafficTotal','StatIPv4','StatCountry','StatProvider','StatEncryption','SplitEnabled','SplitStatus','SplitScopeBox','SplitDomainInput','SplitDomainList','AddSplitDomain','RemoveSplitDomain','SplitIpInput','SplitIpList','AddSplitIp','RemoveSplitIp','SplitAppList','AddSplitApp','RemoveSplitApp','SplitGameList','AddSplitGame','RemoveSplitGame','ApplySplitRules','ExportSplitRules','ImportSplitRules','ResetSplitRules','LanguageBox','ThemeBox','ModeBox','PortBox','DnsBox','AutoStart','StartMinimized','AutoConnect','KillSwitch','DnsProtection','EnableIPv6','WebRtcProtection','DnsLeakProtection','CheckUpdates','AnonymousStats','SaveSettings','InstallCore','EngineBox','EngineStatus','ResetSettings')
 foreach($n in $names){Set-Variable -Scope Script -Name $n -Value $Window.FindName($n)}
 $script:AppsTraffic=$Window.FindName('AppsTraffic')
 $script:AppsSummary=$Window.FindName('AppsSummary')
@@ -2020,13 +2419,15 @@ function Normalize-SplitIp([string]$Value) {
 }
 function Update-SplitView {
     $SplitEnabled.IsChecked=[bool]$State.settings.splitEnabled
+    $SplitScopeBox.SelectedIndex=if($State.settings.mode -eq 'TUN'){1}else{0}
     $SplitDomainList.ItemsSource=@($State.settings.splitDomains)
     $SplitIpList.ItemsSource=@($State.settings.splitIps)
     $SplitAppList.ItemsSource=@($State.settings.splitApps)
     $SplitGameList.ItemsSource=@($State.settings.splitGames)
     $count=@($State.settings.splitDomains).Count+@($State.settings.splitIps).Count+@($State.settings.splitApps).Count+@($State.settings.splitGames).Count
     if([bool]$State.settings.splitEnabled){
-        $SplitStatus.Text="Активно: $count правил. При подключении Luna использует TUN, а выбранный трафик идёт напрямую."
+        $scope=if($State.settings.mode -eq 'TUN'){'TUN: весь системный TCP/UDP-трафик'}else{'System proxy: HTTP/HTTPS proxy-aware приложений'}
+        $SplitStatus.Text="Активно: $count правил. $scope. Выбранный трафик идёт напрямую."
         $SplitStatus.Foreground='#74E5B2'
     }else{
         $SplitStatus.Text="Выключено: сохранено $count правил, но они не применяются."
@@ -2044,9 +2445,6 @@ function Add-SplitExecutables([string]$Category) {
     }
 }
 function Apply-SplitConfiguration {
-    if([bool]$State.settings.splitEnabled){
-        $State.settings.mode='TUN';$HomeModeBox.SelectedIndex=1;$ModeBox.SelectedIndex=1;$ModeLabel.Text='TUN'
-    }
     Save-State;Update-SplitView
     if($script:CoreProcess -and -not $script:CoreProcess.HasExited){
         Stop-Tunnel
@@ -2847,7 +3245,13 @@ function Start-Tunnel {
             Add-AppLog "Xray завершился: $detail"
             throw $detail
         }
-        [LunaTrafficMeter]::Start($freePort,$xrayPort,$freePort+1,$xrayPort+1)
+        $splitProcesses=@();$splitDomains=@();$splitIps=@()
+        if([bool]$State.settings.splitEnabled){
+            $splitProcesses=@($State.settings.splitApps+$State.settings.splitGames|Where-Object {$_}|Select-Object -Unique)
+            $splitDomains=@($State.settings.splitDomains|Where-Object {$_}|Select-Object -Unique)
+            $splitIps=@($State.settings.splitIps|Where-Object {$_}|Select-Object -Unique)
+        }
+        [LunaTrafficMeter]::Start($freePort,$xrayPort,$freePort+1,$xrayPort+1,[string[]]$splitProcesses,[string[]]$splitDomains,[string[]]$splitIps)
         if($State.settings.mode -eq 'System proxy'){Set-SystemProxy $true}
         $script:ConnectedAt=Get-Date;$script:NetworkStart=Get-NetworkTotals;$script:NetworkLast=$script:NetworkStart;$script:NetworkLastAt=$script:ConnectedAt
         $script:SpeedSamples=@([pscustomobject]@{time=$script:ConnectedAt;received=[int64]$script:NetworkStart.received;sent=[int64]$script:NetworkStart.sent})
@@ -2943,13 +3347,8 @@ $HomePingAllButton.Add_Click({
 })
 $HomeModeBox.Add_SelectionChanged({
     if($HomeModeBox.SelectedIndex -lt 0){return}
-    if($HomeModeBox.SelectedIndex -eq 0 -and [bool]$State.settings.splitEnabled){
-        $HomeModeBox.SelectedIndex=1
-        Show-Notice 'Split Tunneling использует TUN' 'Сначала выключите Split Tunneling, если хотите перейти в System proxy.' 'INFO'
-        return
-    }
     $State.settings.mode=if($HomeModeBox.SelectedIndex -eq 1){'TUN'}else{'System proxy'}
-    $ModeBox.SelectedIndex=$HomeModeBox.SelectedIndex;$ModeLabel.Text=$State.settings.mode;Save-State
+    $ModeBox.SelectedIndex=$HomeModeBox.SelectedIndex;$SplitScopeBox.SelectedIndex=$HomeModeBox.SelectedIndex;$ModeLabel.Text=$State.settings.mode;Save-State;Update-SplitView
 })
 $LatencyRefreshHome.Add_Click({Start-SelectedLatencyProbe})
 $LatencyAutoRefresh.Add_Checked({$script:SelectedLatencyAutoEnabled=$true;$State.settings.latencyAutoRefresh=$true;Save-State})
@@ -2999,7 +3398,7 @@ $SaveSettings.Add_Click({
     if($oldLanguage -ne $State.settings.language -or $oldTheme -ne $State.settings.theme){Show-Notice 'Требуется перезапуск приложения Luna' 'Новый язык и тема применятся после следующего запуска.' 'INFO'}
 })
 $SplitEnabled.Add_Checked({
-    $State.settings.splitEnabled=$true;$State.settings.mode='TUN';$HomeModeBox.SelectedIndex=1;$ModeBox.SelectedIndex=1;$ModeLabel.Text='TUN';Save-State;Update-SplitView
+    $State.settings.splitEnabled=$true;Save-State;Update-SplitView
     if(-not $script:InitializingUi){
         if($script:CoreProcess -and -not $script:CoreProcess.HasExited){Apply-SplitConfiguration}else{Show-Notice 'Split Tunneling включён' 'При подключении Luna запросит права администратора и применит исключения ко всему системному трафику.' 'SUCCESS'}
     }
@@ -3014,13 +3413,21 @@ $RemoveSplitApp.Add_Click({if($SplitAppList.SelectedItem){$remove=[string]$Split
 $AddSplitGame.Add_Click({Add-SplitExecutables 'game'})
 $RemoveSplitGame.Add_Click({if($SplitGameList.SelectedItem){$remove=[string]$SplitGameList.SelectedItem;$State.settings.splitGames=@($State.settings.splitGames|Where-Object {$_ -ne $remove});Save-State;Update-SplitView}})
 $ApplySplitRules.Add_Click({Apply-SplitConfiguration})
+$SplitScopeBox.Add_SelectionChanged({
+    if($script:InitializingUi -or $SplitScopeBox.SelectedIndex -lt 0){return}
+    $State.settings.mode=if($SplitScopeBox.SelectedIndex -eq 1){'TUN'}else{'System proxy'}
+    $HomeModeBox.SelectedIndex=$SplitScopeBox.SelectedIndex
+    $ModeBox.SelectedIndex=$SplitScopeBox.SelectedIndex
+    $ModeLabel.Text=$State.settings.mode
+    Save-State;Update-SplitView
+})
 $ExportSplitRules.Add_Click({
     $dialog=New-Object Microsoft.Win32.SaveFileDialog;$dialog.Filter='Luna Split Tunneling (*.json)|*.json';$dialog.FileName="luna-split-rules-$(Get-Date -Format 'yyyyMMdd').json"
-    if($dialog.ShowDialog()){$export=[ordered]@{schema='luna.split.v1';enabled=[bool]$State.settings.splitEnabled;domains=@($State.settings.splitDomains);ips=@($State.settings.splitIps);applications=@($State.settings.splitApps);games=@($State.settings.splitGames)};[IO.File]::WriteAllText($dialog.FileName,($export|ConvertTo-Json -Depth 8),(New-Object Text.UTF8Encoding($false)));Show-Notice 'Экспорт завершён' 'Правила Split Tunneling сохранены.' 'SUCCESS'}
+    if($dialog.ShowDialog()){$export=[ordered]@{schema='luna.split.v2';enabled=[bool]$State.settings.splitEnabled;scope=if($State.settings.mode -eq 'TUN'){'tun'}else{'system-proxy'};domains=@($State.settings.splitDomains);ips=@($State.settings.splitIps);applications=@($State.settings.splitApps);games=@($State.settings.splitGames)};[IO.File]::WriteAllText($dialog.FileName,($export|ConvertTo-Json -Depth 8),(New-Object Text.UTF8Encoding($false)));Show-Notice 'Экспорт завершён' 'Правила Split Tunneling сохранены.' 'SUCCESS'}
 })
 $ImportSplitRules.Add_Click({
     $dialog=New-Object Microsoft.Win32.OpenFileDialog;$dialog.Filter='Luna Split Tunneling (*.json)|*.json'
-    if($dialog.ShowDialog()){try{$data=Get-Content -Raw -Encoding UTF8 $dialog.FileName|ConvertFrom-Json;if($data.schema -ne 'luna.split.v1'){throw 'Файл имеет неподдерживаемый формат.'};$domains=@($data.domains|ForEach-Object {Normalize-SplitDomain ([string]$_)});$ips=@($data.ips|ForEach-Object {Normalize-SplitIp ([string]$_)});$apps=@($data.applications|Where-Object {[IO.Path]::GetExtension([string]$_) -ieq '.exe'});$games=@($data.games|Where-Object {[IO.Path]::GetExtension([string]$_) -ieq '.exe'});$State.settings.splitDomains=@($domains|Select-Object -Unique);$State.settings.splitIps=@($ips|Select-Object -Unique);$State.settings.splitApps=@($apps|Select-Object -Unique);$State.settings.splitGames=@($games|Select-Object -Unique);$State.settings.splitEnabled=[bool]$data.enabled;if($State.settings.splitEnabled){$State.settings.mode='TUN'};Save-State;Update-SplitView;Show-Notice 'Импорт завершён' 'Правила проверены и загружены.' 'SUCCESS'}catch{Show-Notice 'Импорт не выполнен' $_.Exception.Message 'ERROR'}}
+    if($dialog.ShowDialog()){try{$data=Get-Content -Raw -Encoding UTF8 $dialog.FileName|ConvertFrom-Json;if($data.schema -notin @('luna.split.v1','luna.split.v2')){throw 'Файл имеет неподдерживаемый формат.'};$domains=@($data.domains|ForEach-Object {Normalize-SplitDomain ([string]$_)});$ips=@($data.ips|ForEach-Object {Normalize-SplitIp ([string]$_)});$apps=@($data.applications|Where-Object {[IO.Path]::GetExtension([string]$_) -ieq '.exe'});$games=@($data.games|Where-Object {[IO.Path]::GetExtension([string]$_) -ieq '.exe'});$State.settings.splitDomains=@($domains|Select-Object -Unique);$State.settings.splitIps=@($ips|Select-Object -Unique);$State.settings.splitApps=@($apps|Select-Object -Unique);$State.settings.splitGames=@($games|Select-Object -Unique);$State.settings.splitEnabled=[bool]$data.enabled;if($data.schema -eq 'luna.split.v2'){$State.settings.mode=if($data.scope -eq 'tun'){'TUN'}else{'System proxy'}};Save-State;Update-SplitView;Show-Notice 'Импорт завершён' 'Правила проверены и загружены.' 'SUCCESS'}catch{Show-Notice 'Импорт не выполнен' $_.Exception.Message 'ERROR'}}
 })
 $script:SplitResetArmed=$false
 $ResetSplitRules.Add_Click({if(-not $script:SplitResetArmed){$script:SplitResetArmed=$true;$ResetSplitRules.Content='Нажмите ещё раз';return};$State.settings.splitEnabled=$false;$State.settings.splitDomains=@();$State.settings.splitIps=@();$State.settings.splitApps=@();$State.settings.splitGames=@();$script:SplitResetArmed=$false;$ResetSplitRules.Content='Сбросить';Save-State;$script:InitializingUi=$true;Update-SplitView;$script:InitializingUi=$false;if($script:CoreProcess -and -not $script:CoreProcess.HasExited){Apply-SplitConfiguration}else{Show-Notice 'Правила сброшены' 'Все исключения Split Tunneling удалены.' 'SUCCESS'}})
@@ -3091,8 +3498,7 @@ $PortBox.Add_TextChanged($markSettingsDirty);$DnsBox.Add_TextChanged($markSettin
 $restartRequiredChanged={& $markSettingsDirty;Show-Notice 'Требуется перезапуск приложения Luna' 'Новый язык или тема применятся после следующего запуска.' 'INFO'}
 $LanguageBox.Add_SelectionChanged($restartRequiredChanged);$ThemeBox.Add_SelectionChanged($restartRequiredChanged);$ModeBox.Add_SelectionChanged({
     & $markSettingsDirty
-    if($ModeBox.SelectedIndex -eq 0 -and [bool]$State.settings.splitEnabled){$ModeBox.SelectedIndex=1;Show-Notice 'Split Tunneling использует TUN' 'Выключите Split Tunneling перед переходом в System proxy.' 'INFO';return}
-    if($ModeBox.SelectedIndex -ge 0){$State.settings.mode=if($ModeBox.SelectedIndex -eq 1){'TUN'}else{'System proxy'};$HomeModeBox.SelectedIndex=$ModeBox.SelectedIndex;$ModeLabel.Text=$State.settings.mode}
+    if($ModeBox.SelectedIndex -ge 0){$State.settings.mode=if($ModeBox.SelectedIndex -eq 1){'TUN'}else{'System proxy'};$HomeModeBox.SelectedIndex=$ModeBox.SelectedIndex;$SplitScopeBox.SelectedIndex=$ModeBox.SelectedIndex;$ModeLabel.Text=$State.settings.mode}
 })
 foreach($settingToggle in @($AutoStart,$StartMinimized,$AutoConnect,$KillSwitch,$DnsProtection,$EnableIPv6,$WebRtcProtection,$DnsLeakProtection,$CheckUpdates,$AnonymousStats)){$settingToggle.Add_Click($markSettingsDirty)}
 Initialize-ServerCatalog;Refresh-CoreStatus;Refresh-Profiles;Refresh-Subscriptions;Initialize-SystemTray;Refresh-RouteQualityView;Update-RouteComparisonSummary;$timer.Start()
