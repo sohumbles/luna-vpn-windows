@@ -1,4 +1,4 @@
-# Luna 1.4.0-release — Windows 10/11 proxy/VPN client
+# Luna 1.4.1-release — Windows 10/11 proxy/VPN client
 # Native Xray TUN split routing for websites, IPs, applications and games.
 [CmdletBinding()]
 param()
@@ -1112,7 +1112,7 @@ public static class LunaTrafficMeter
 }
 '@ -ReferencedAssemblies 'System.Net.Http.dll'
 
-$AppVersion = '1.4.0-release'
+$AppVersion = '1.4.1-release'
 $AppRoot = Join-Path $env:LOCALAPPDATA 'Luna'
 $LegacyRoot = Join-Path $env:LOCALAPPDATA 'LumaTunnel'
 $CoreDir = Join-Path $AppRoot 'core'
@@ -1163,6 +1163,23 @@ function ConvertTo-Hashtable($Object) {
         $h = @{}; foreach ($p in $Object.PSObject.Properties) { $h[$p.Name] = ConvertTo-Hashtable $p.Value }; return $h
     }
     return $Object
+}
+function Get-LunaObjectValue($Object,[string]$Name,$Fallback=$null) {
+    if($null -eq $Object){return $Fallback}
+    if($Object -is [System.Collections.IDictionary]){
+        if($Object.Contains($Name)){return $Object[$Name]}
+        return $Fallback
+    }
+    $property=$Object.PSObject.Properties[$Name]
+    if($null -ne $property){return $property.Value}
+    return $Fallback
+}
+function Set-LunaObjectValue($Object,[string]$Name,$Value) {
+    if($null -eq $Object){throw "Нельзя назначить свойство '$Name' пустому объекту."}
+    if($Object -is [System.Collections.IDictionary]){$Object[$Name]=$Value;return}
+    $property=$Object.PSObject.Properties[$Name]
+    if($null -ne $property){$property.Value=$Value;return}
+    $Object|Add-Member -NotePropertyName $Name -NotePropertyValue $Value
 }
 function Save-State {
     $temp="$DataFile.tmp"
@@ -1412,7 +1429,7 @@ function Update-SystemTrafficStatistics {
         $script:SystemNetworkLast=$totals
         $script:SystemNetworkLastAt=$now
     }
-    $seconds=[Math]::Max(0.1,($now-$script:SystemNetworkLastAt).TotalSeconds)
+    $seconds=[Math]::Max([double]0.1,[double](($now-$script:SystemNetworkLastAt).TotalSeconds))
     # Keep cumulative network counters in Int64. Passing an Int32 literal as the
     # first Math.Max argument makes PowerShell select the Int32 overload and
     # throws as soon as a counter grows beyond 2 GB.
@@ -1444,7 +1461,7 @@ function Update-SessionStatistics {
     $sample=[pscustomobject]@{time=$now;received=[int64]$totals.received;sent=[int64]$totals.sent}
     $script:SpeedSamples=@($script:SpeedSamples|Where-Object {($now-$_.time).TotalSeconds -le 4})+@($sample)
     $baseline=$script:SpeedSamples|Select-Object -First 1
-    $seconds=[Math]::Max(0.1,($now-$baseline.time).TotalSeconds)
+    $seconds=[Math]::Max([double]0.1,[double](($now-$baseline.time).TotalSeconds))
     $down=[Math]::Max([double]0,[double](($totals.received-$baseline.received)*8/$seconds/1MB))
     $up=[Math]::Max([double]0,[double](($totals.sent-$baseline.sent)*8/$seconds/1MB))
     $DownSpeed.Text="↓ $([Math]::Round($down,1)) Mbps";$UpSpeed.Text="↑ $([Math]::Round($up,1)) Mbps"
@@ -1603,7 +1620,7 @@ function Get-LunaRoutingRules {
     return $rules
 }
 function Add-LunaTunInbound($inbounds) {
-    $result=@($inbounds|Where-Object {$_.tag -ne 'tun-in' -and $_.protocol -ne 'tun'})
+    $result=@($inbounds|Where-Object {(Get-LunaObjectValue $_ 'tag') -ne 'tun-in' -and (Get-LunaObjectValue $_ 'protocol') -ne 'tun'})
     if($State.settings.mode -ne 'TUN'){return $result}
     $gateway=@('172.19.0.1/30')
     $routes=@('0.0.0.0/0')
@@ -1622,20 +1639,28 @@ function Build-XrayConfig($p,[int]$InboundPort=0) {
     $basePort=if($InboundPort -gt 0){$InboundPort}else{[int]$State.settings.localPort}
     if($e.isJson -and $p.raw){
         $jsonConfig=ConvertTo-Hashtable ($p.raw|ConvertFrom-Json)
-        $jsonConfig.log=@{loglevel='warning';access=$LogFile;error=$LogFile}
-        foreach($inbound in @($jsonConfig.inbounds)){
-            if($inbound.protocol -eq 'socks'){$inbound.port=$basePort;$inbound.listen='127.0.0.1'}
-            if($inbound.protocol -eq 'http'){$inbound.port=$basePort+1;$inbound.listen='127.0.0.1'}
+        Set-LunaObjectValue $jsonConfig 'log' @{loglevel='warning';access=$LogFile;error=$LogFile}
+        $jsonInbounds=@(Get-LunaObjectValue $jsonConfig 'inbounds' @())
+        foreach($inbound in $jsonInbounds){
+            if((Get-LunaObjectValue $inbound 'protocol') -eq 'socks'){Set-LunaObjectValue $inbound 'port' $basePort;Set-LunaObjectValue $inbound 'listen' '127.0.0.1'}
+            if((Get-LunaObjectValue $inbound 'protocol') -eq 'http'){Set-LunaObjectValue $inbound 'port' ($basePort+1);Set-LunaObjectValue $inbound 'listen' '127.0.0.1'}
         }
-        $jsonConfig.inbounds=@(Add-LunaTunInbound @($jsonConfig.inbounds))
-        if(-not $jsonConfig.outbounds){throw 'JSON-профиль не содержит outbound.'}
-        $proxyOutbound=@($jsonConfig.outbounds|Where-Object {$_.protocol -notin @('freedom','blackhole')}|Select-Object -First 1)
-        if($proxyOutbound){$proxyOutbound.tag='proxy'}
-        if(-not @($jsonConfig.outbounds|Where-Object {$_.tag -eq 'direct'}).Count){$jsonConfig.outbounds+=,@{protocol='freedom';tag='direct'}}
-        if(-not @($jsonConfig.outbounds|Where-Object {$_.tag -eq 'block'}).Count){$jsonConfig.outbounds+=,@{protocol='blackhole';tag='block'}}
-        if(-not $jsonConfig.routing){$jsonConfig.routing=@{domainStrategy='IPIfNonMatch';rules=@()}}
-        $jsonConfig.routing.domainStrategy='IPIfNonMatch'
-        $jsonConfig.routing.rules=@(Get-LunaRoutingRules)+@($jsonConfig.routing.rules)
+        Set-LunaObjectValue $jsonConfig 'inbounds' @(Add-LunaTunInbound $jsonInbounds)
+        $jsonOutbounds=@(Get-LunaObjectValue $jsonConfig 'outbounds' @())
+        if(-not $jsonOutbounds.Count){throw 'JSON-профиль не содержит outbound.'}
+        # Select-Object already returns the selected outbound object. Wrapping it
+        # in @() turns it into Object[]; assigning `.tag` to that array fails for
+        # JSON subscription profiles whose outbound did not already have a tag.
+        $proxyOutbound=$jsonOutbounds|Where-Object {(Get-LunaObjectValue $_ 'protocol') -notin @('freedom','blackhole')}|Select-Object -First 1
+        if($proxyOutbound){Set-LunaObjectValue $proxyOutbound 'tag' 'proxy'}
+        if(-not @($jsonOutbounds|Where-Object {(Get-LunaObjectValue $_ 'tag') -eq 'direct'}).Count){$jsonOutbounds+=,@{protocol='freedom';tag='direct'}}
+        if(-not @($jsonOutbounds|Where-Object {(Get-LunaObjectValue $_ 'tag') -eq 'block'}).Count){$jsonOutbounds+=,@{protocol='blackhole';tag='block'}}
+        Set-LunaObjectValue $jsonConfig 'outbounds' $jsonOutbounds
+        $jsonRouting=Get-LunaObjectValue $jsonConfig 'routing'
+        if(-not $jsonRouting){$jsonRouting=@{domainStrategy='IPIfNonMatch';rules=@()};Set-LunaObjectValue $jsonConfig 'routing' $jsonRouting}
+        Set-LunaObjectValue $jsonRouting 'domainStrategy' 'IPIfNonMatch'
+        $existingRules=@(Get-LunaObjectValue $jsonRouting 'rules' @())
+        Set-LunaObjectValue $jsonRouting 'rules' (@(Get-LunaRoutingRules)+$existingRules)
         return $jsonConfig
     }
     switch($p.protocol){
@@ -1707,7 +1732,7 @@ $xamlText=@'
     <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"><StackPanel>
      <Image Name="BrandIcon" Width="76" Height="76" HorizontalAlignment="Left" Stretch="UniformToFill" Margin="0,0,0,10"/>
      <TextBlock Text="Luna" FontSize="29" FontWeight="SemiBold" Foreground="#FFFFFF"/>
-     <TextBlock Text="VPN · 1.4.0-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
+     <TextBlock Text="VPN · 1.4.1-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
      <Button Name="NavHome" Content="◉  Подключение" HorizontalContentAlignment="Left"/>
      <Button Name="NavServers" Content="◫  Серверы" HorizontalContentAlignment="Left"/>
      <Button Name="NavSubs" Content="↻  Подписки" HorizontalContentAlignment="Left"/>
@@ -1838,7 +1863,7 @@ $xamlText=@'
     </StackPanel></ScrollViewer>
    </Grid>
    <Grid Name="ExpertsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="Для экспертов" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Сейчас полностью поддерживается только Xray-core. Остальные движки появятся в следующих обновлениях." TextWrapping="Wrap" Foreground="#FFD166" Margin="4,8,0,18"/><TextBlock Text="Сетевой движок"/><ComboBox Name="EngineBox" Width="390" HorizontalAlignment="Left"><ComboBoxItem Content="Xray-core"/><ComboBoxItem Content="Sing-box — в разработке" IsEnabled="False"/><ComboBoxItem Content="Clash Meta — в разработке" IsEnabled="False"/><ComboBoxItem Content="Hysteria2 — в разработке" IsEnabled="False"/><ComboBoxItem Content="WireGuard — в разработке" IsEnabled="False"/><ComboBoxItem Content="OpenVPN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="EngineStatus" Text="● Xray-core установлен" Foreground="#65E6A7" Margin="5,8"/><Button Name="ResetSettings" Content="Сбросить все настройки" Width="220" HorizontalAlignment="Left" Margin="0,25,0,0"/></StackPanel></Grid>
-   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.4.0-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
+   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.4.1-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
    <Border Name="LoadingOverlay" Panel.ZIndex="50" Background="#D90B0D16" CornerRadius="14" Visibility="Collapsed">
     <StackPanel Width="360" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Name="LoadingText" Text="Загрузка…" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,14"/><ProgressBar Height="7" IsIndeterminate="True" Foreground="#8C7CFF" Background="#262A43"/></StackPanel>
    </Border>
@@ -2059,7 +2084,7 @@ function Get-AvailablePortBlock([int]$Preferred) {
     foreach($endpoint in [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()){
         [void]$used.Add([int]$endpoint.Port)
     }
-    for($port=[Math]::Max(1024,$Preferred);$port -lt 65000;$port+=2){
+    for($port=[Math]::Max([int]1024,[int]$Preferred);$port -lt 65000;$port+=2){
         if(-not $used.Contains($port) -and -not $used.Contains($port+1) -and -not $used.Contains($port+2) -and -not $used.Contains($port+3)){return $port}
     }
     throw 'Не удалось найти свободные локальные порты.'
@@ -2233,7 +2258,7 @@ function Invoke-AsyncHttp([string]$Uri,[hashtable]$Headers,[switch]$AsBytes,[int
     $handler=New-Object Net.Http.HttpClientHandler
     $handler.AutomaticDecompression=[Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate
     $client=New-Object Net.Http.HttpClient -ArgumentList (,$handler)
-    $client.Timeout=[TimeSpan]::FromSeconds([Math]::Max(3,$TimeoutSeconds))
+    $client.Timeout=[TimeSpan]::FromSeconds([Math]::Max([double]3,[double]$TimeoutSeconds))
     $request=New-Object Net.Http.HttpRequestMessage -ArgumentList ([Net.Http.HttpMethod]::Get,$Uri)
     foreach($key in $Headers.Keys){[void]$request.Headers.TryAddWithoutValidation($key,[string]$Headers[$key])}
     try{
@@ -2298,7 +2323,7 @@ function Apply-BackendMetadata($Metadata,[bool]$FromCache=$false) {
             $ConnectButton.IsEnabled=$true
         }
         if($script:BackendTimer -and $Metadata.config.serverRefreshIntervalSeconds){
-            $seconds=[Math]::Max(30,[int]$Metadata.config.serverRefreshIntervalSeconds)
+            $seconds=[Math]::Max([int]30,[int]$Metadata.config.serverRefreshIntervalSeconds)
             $script:BackendTimer.Interval=[TimeSpan]::FromSeconds($seconds)
         }
     }
@@ -2505,7 +2530,7 @@ function Update-RouteComparisonSummary {
         $directLatency=[double]$direct.LatencyMs
         $vpnLatency=[double]$vpn.LatencyMs
         $meaningfullyFaster=[bool]$vpn.IsAvailable -and $directLatency -gt 0 -and $vpnLatency -gt 0 -and
-            (($directLatency-$vpnLatency) -ge [Math]::Max(20,$directLatency*0.15))
+            (($directLatency-$vpnLatency) -ge [Math]::Max([double]20,[double]($directLatency*0.15)))
         if($becameAvailable -or $meaningfullyFaster){$improved+=[string]$target.Name}
     }
     if($improved.Count){
@@ -2601,7 +2626,7 @@ function Update-RouteQualityState {
     }
 }
 function Draw-LatencyGraph {
-    $w=[Math]::Max(10,$LatencyCanvas.ActualWidth);$h=[Math]::Max(10,$LatencyCanvas.ActualHeight)
+    $w=[Math]::Max([double]10,[double]$LatencyCanvas.ActualWidth);$h=[Math]::Max([double]10,[double]$LatencyCanvas.ActualHeight)
     $values=@($script:LatencyHistory)
     $LatencyCanvas.Children.Clear();$LossCanvas.Children.Clear()
     foreach($level in @(0,50,100,300,500,700,999)){
@@ -2711,7 +2736,7 @@ function Test-ProfileLatency($Profile) {
         $timeout=[Threading.Tasks.Task]::Delay(3000)
         $race=[Threading.Tasks.Task]::WhenAny($connect,$timeout)
         Wait-UiTask $race
-        if($connect.IsCompleted -and $client.Connected){return [Math]::Max(1,$watch.ElapsedMilliseconds)}
+        if($connect.IsCompleted -and $client.Connected){return [Math]::Max([long]1,[long]$watch.ElapsedMilliseconds)}
         return -1
     }finally{$client.Close()}
 }
@@ -2739,7 +2764,7 @@ function Test-AllProfileLatencies {
                 if($job.Task.IsCompleted -or $job.Watch.ElapsedMilliseconds -ge 3000){
                     $ok=$job.Task.IsCompleted -and $job.Client.Connected
                     if($ok){
-                        $ms=[Math]::Max(1,$job.Watch.ElapsedMilliseconds)
+                        $ms=[Math]::Max([long]1,[long]$job.Watch.ElapsedMilliseconds)
                         $job.Profile['latency']="$ms ms";$job.Profile['healthStatus']='Доступен';$available++
                     }else{
                         $job.Profile['latency']='таймаут';$job.Profile['healthStatus']='Недоступен';$unavailable++
@@ -2960,9 +2985,9 @@ $SaveSettings.Add_Click({
     $oldLanguage=$State.settings.language;$oldTheme=$State.settings.theme
     $State.settings.mode=if($ModeBox.SelectedIndex -eq 1){'TUN'}else{'System proxy'};$State.settings.localPort=[int]$PortBox.Text;$State.settings.dns=$DnsBox.Text;$State.settings.autoStart=$AutoStart.IsChecked;$State.settings.startMinimized=$StartMinimized.IsChecked
     $supportedLanguages=@('Русский','English')
-    $languageIndex=[Math]::Max(0,[Math]::Min($LanguageBox.SelectedIndex,$supportedLanguages.Count-1))
+    $languageIndex=[Math]::Max([int]0,[Math]::Min([int]$LanguageBox.SelectedIndex,[int]($supportedLanguages.Count-1)))
     $State.settings.language=$supportedLanguages[$languageIndex]
-    $State.settings.theme=@('Темная','Светлая','Авто')[[Math]::Max(0,$ThemeBox.SelectedIndex)]
+    $State.settings.theme=@('Темная','Светлая','Авто')[[Math]::Max([int]0,[int]$ThemeBox.SelectedIndex)]
     $State.settings.autoConnect=$AutoConnect.IsChecked;$State.settings.killSwitch=$KillSwitch.IsChecked;$State.settings.dnsProtection=$DnsProtection.IsChecked;$State.settings.enableIPv6=$EnableIPv6.IsChecked;$State.settings.webRtcProtection=$WebRtcProtection.IsChecked;$State.settings.dnsLeakProtection=$DnsLeakProtection.IsChecked;$State.settings.checkUpdates=$CheckUpdates.IsChecked;$State.settings.anonymousStats=$AnonymousStats.IsChecked
     $State.settings.telemetryConsentAsked=$true
     $run='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'

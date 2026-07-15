@@ -34,12 +34,16 @@ function Invoke-Test {
         $script:Failed++
         Write-Host "[FAIL] $Name" -ForegroundColor Red
         Write-Host "       $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.InvocationInfo.PositionMessage) {
+            Write-Host "       $($_.InvocationInfo.PositionMessage.Trim())" -ForegroundColor DarkRed
+        }
     }
 }
 
 $boundaryValues = @(
     [int64]2147483647,
     [int64]2147483648,
+    [int64]2148533168,
     [int64]2152589830,
     [int64]4294967296,
     [int64]1099511627776
@@ -254,9 +258,52 @@ Invoke-Test 'Split Tunneling compiles to native Xray TUN routing' {
     Assert-True ($applicationSource -match "luna\.split\.v1") 'Import/export schema must be versioned'
 }
 
+Invoke-Test 'JSON subscription outbound without tag builds in TUN mode' {
+    $applicationPath = @(
+        (Join-Path $PSScriptRoot '..\Luna.ps1'),
+        (Join-Path $PSScriptRoot '..\src\Luna.ps1')
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $applicationSource = Get-Content -Raw -Encoding UTF8 $applicationPath
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($applicationSource, [ref]$tokens, [ref]$parseErrors)
+    Assert-Equal 0 @($parseErrors).Count 'Application source must parse before extracting configuration functions'
+    foreach ($functionName in @('ConvertTo-Hashtable', 'Get-LunaObjectValue', 'Set-LunaObjectValue', 'Get-LunaRoutingRules', 'Add-LunaTunInbound', 'Build-XrayConfig')) {
+        $definition = $ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
+        }, $true) | Select-Object -First 1
+        Assert-True ($null -ne $definition) "Function $functionName must exist"
+        Invoke-Expression $definition.Extent.Text
+    }
+    $script:State = @{
+        settings = @{
+            mode = 'TUN'; localPort = 10808; enableIPv6 = $false; dns = '1.1.1.1'
+            bypassLan = $false; blockAds = $false; blockDomains = ''; directDomains = ''
+            splitEnabled = $false; splitDomains = @(); splitIps = @(); splitApps = @(); splitGames = @()
+        }
+    }
+    $script:LogFile = Join-Path $env:TEMP 'luna-json-profile-regression.log'
+    $rawConfig = @{
+        inbounds = @(@{ listen = '127.0.0.1'; port = 10808; protocol = 'socks'; settings = @{ udp = $false } })
+        outbounds = @(@{
+            protocol = 'vless'
+            settings = @{ vnext = @(@{ address = 'example.com'; port = 443; users = @(@{ id = '00000000-0000-4000-8000-000000000000'; encryption = 'none' }) }) }
+            streamSettings = @{ network = 'tcp'; security = 'none' }
+        })
+        routing = @{ domainStrategy = 'IPIfNonMatch'; rules = @() }
+    } | ConvertTo-Json -Depth 20 -Compress
+    $profile = @{ extra = @{ isJson = $true }; raw = $rawConfig }
+    $config = Build-XrayConfig $profile 10808
+    $proxy = $config.outbounds | Where-Object { $_.protocol -eq 'vless' } | Select-Object -First 1
+    Assert-True ($null -ne $proxy) 'Proxy outbound must be preserved'
+    Assert-Equal 'proxy' $proxy['tag'] 'Proxy tag must be assigned to the outbound object rather than an Object array'
+    Assert-Equal 1 @($config.inbounds | Where-Object { $_.protocol -eq 'tun' }).Count 'TUN inbound must be added'
+}
+
 $elapsed = [DateTimeOffset]::UtcNow - $script:StartedAt
 Write-Host ''
-Write-Host ('Luna 1.4.0 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
+Write-Host ('Luna 1.4.1 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
 
 if ($script:Failed -ne 0) { exit 1 }
 exit 0
