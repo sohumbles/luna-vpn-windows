@@ -91,6 +91,16 @@ Invoke-Test 'Telemetry JSON preserves BIGINT counters as strings' {
     Assert-True ($payload.Contains('"txBytes":"4294967296"')) 'txBytes must be a JSON string'
 }
 
+Invoke-Test 'Anonymous report sanitizer removes client secrets and identifiers' {
+    $input='Failed vless://secret@example.test UUID=8c0af1be-760f-4a69-bed8-0dc529a3d671 IP 72.56.116.159 C:\Users\Dima\AppData token=abcd1234'
+    $safe=Protect-LunaAnonymousReportText $input
+    Assert-True (-not $safe.Contains('vless://')) 'Proxy link must be removed'
+    Assert-True (-not $safe.Contains('8c0af1be')) 'UUID must be removed'
+    Assert-True (-not $safe.Contains('72.56.116.159')) 'IP must be removed'
+    Assert-True (-not $safe.Contains('C:\Users\Dima')) 'User path must be removed'
+    Assert-True (-not $safe.Contains('abcd1234')) 'Token must be removed'
+}
+
 Invoke-Test 'Rates use Int64 deltas and double division' {
     $state = New-LunaCounterState
     $t0 = [DateTimeOffset]::Parse('2026-07-12T00:00:00Z')
@@ -426,7 +436,7 @@ Invoke-Test 'JSON subscription outbound without tag builds in TUN mode' {
 
 $elapsed = [DateTimeOffset]::UtcNow - $script:StartedAt
 Write-Host ''
-Write-Host ('Luna 1.5.1 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
+Write-Host ('Luna 1.5.2 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
 
 if ($script:Failed -ne 0) { exit 1 }
 exit 0

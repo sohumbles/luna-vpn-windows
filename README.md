@@ -4,7 +4,7 @@ Luna is a Windows desktop client for managing Xray-based VPN/proxy profiles.
 The interface is implemented with WPF and PowerShell, while the native launcher
 hosts PowerShell in-process without displaying a console window.
 
-Current source version: **1.5.1-release**.
+Current source version: **1.5.2-release**.
 
 Official website: https://security-luna-vpn.ru/
 
@@ -77,8 +77,10 @@ Example:
 
 ## Privacy and support
 
-Luna does not include telemetry upload in the current source release. Local
-logs and profiles remain on the device unless the user exports them.
+Luna can send sanitized diagnostic error reports only after explicit user
+consent. Profiles and full local logs remain on the device unless the user
+exports them. Client-side and server-side filters remove connection secrets,
+addresses and user paths from reports.
 
 - Telegram: https://t.me/luna_vpnSecurity
 - Email: idontgod22480@gmail.com

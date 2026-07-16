@@ -172,4 +172,18 @@ function Format-LunaDuration {
     return ('{0:00}:{1:00}:{2:00}' -f $hours, $Duration.Minutes, $Duration.Seconds)
 }
 
-Export-ModuleMember -Function ConvertTo-LunaInt64Counter, New-LunaCounterState, Update-LunaCounterState, New-LunaBoundedQueue, Add-LunaBoundedQueueItem, Take-LunaBoundedQueueBatch, ConvertTo-LunaTelemetryCounterString, Format-LunaDuration
+function Protect-LunaAnonymousReportText {
+    param([AllowNull()][string]$Text)
+    if([string]::IsNullOrWhiteSpace($Text)){return ''}
+    $safe=[string]$Text
+    $safe=$safe -replace '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b','[UUID]'
+    $safe=$safe -replace '(?i)\b(?:https?|vless|vmess|trojan|ss|socks5)://\S+','[LINK]'
+    $safe=$safe -replace '(?i)\b(?:\d{1,3}\.){3}\d{1,3}\b','[IP]'
+    $safe=$safe -replace '(?i)\b(?:[0-9a-f]{0,4}:){2,}[0-9a-f:]{0,4}\b','[IP]'
+    $safe=$safe -replace '(?i)[A-Z]:\\Users\\[^\\\s]+','C:\Users\[USER]'
+    $safe=$safe -replace '(?i)\b(privatekey|publickey|shortid|token|password|uuid)\s*[:=]\s*[^\s;,]+','$1=[REDACTED]'
+    if($safe.Length -gt 6000){$safe=$safe.Substring(0,6000)}
+    return $safe
+}
+
+Export-ModuleMember -Function ConvertTo-LunaInt64Counter, New-LunaCounterState, Update-LunaCounterState, New-LunaBoundedQueue, Add-LunaBoundedQueueItem, Take-LunaBoundedQueueBatch, ConvertTo-LunaTelemetryCounterString, Format-LunaDuration, Protect-LunaAnonymousReportText

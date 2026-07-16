@@ -1,4 +1,4 @@
-# Luna 1.5.1-release — Windows 10/11 proxy/VPN client
+# Luna 1.5.2-release — Windows 10/11 proxy/VPN client
 # Split routing for System Proxy and native Xray TUN modes.
 [CmdletBinding()]
 param()
@@ -1516,7 +1516,7 @@ public static class LunaTrafficMeter
 }
 '@ -ReferencedAssemblies 'System.Net.Http.dll'
 
-$AppVersion = '1.5.1-release'
+$AppVersion = '1.5.2-release'
 $AppRoot = Join-Path $env:LOCALAPPDATA 'Luna'
 $LegacyRoot = Join-Path $env:LOCALAPPDATA 'LumaTunnel'
 $CoreDir = Join-Path $AppRoot 'core'
@@ -1999,6 +1999,51 @@ function Build-StreamSettings($p) {
     if($s.security -eq 'reality'){$s.realitySettings=@{serverName=$e.sni;publicKey=$e.publicKey;shortId=$e.shortId;fingerprint=$e.fingerprint;spiderX=(Get-Or $e.spiderX '/')}}
     return $s
 }
+function Protect-AnonymousReportText([string]$Text) {
+    if([string]::IsNullOrWhiteSpace($Text)){return ''}
+    $safe=[string]$Text
+    $safe=$safe -replace '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b','[UUID]'
+    $safe=$safe -replace '(?i)\b(?:https?|vless|vmess|trojan|ss|socks5)://\S+','[LINK]'
+    $safe=$safe -replace '(?i)\b(?:\d{1,3}\.){3}\d{1,3}\b','[IP]'
+    $safe=$safe -replace '(?i)\b(?:[0-9a-f]{0,4}:){2,}[0-9a-f:]{0,4}\b','[IP]'
+    $safe=$safe -replace '(?i)[A-Z]:\\Users\\[^\\\s]+','C:\Users\[USER]'
+    $safe=$safe -replace '(?i)\b(privatekey|publickey|shortid|token|password|uuid)\s*[:=]\s*[^\s;,]+','$1=[REDACTED]'
+    if($safe.Length -gt 6000){$safe=$safe.Substring(0,6000)}
+    return $safe
+}
+function Send-AnonymousErrorReport([string]$Title,[string]$Message,[string]$Module='Desktop') {
+    if(-not [bool]$script:State.settings.anonymousStats){return}
+    try{
+        $safeTitle=Protect-AnonymousReportText $Title
+        $safeMessage=Protect-AnonymousReportText $Message
+        $fingerprint="$safeTitle|$safeMessage"
+        if($script:LastAnonymousReportFingerprint -eq $fingerprint -and $script:LastAnonymousReportAt -and ((Get-Date)-$script:LastAnonymousReportAt).TotalSeconds -lt 60){return}
+        $script:LastAnonymousReportFingerprint=$fingerprint
+        $script:LastAnonymousReportAt=Get-Date
+        if(-not $script:AnonymousReportClient){
+            $script:AnonymousReportClient=New-Object Net.Http.HttpClient
+            $script:AnonymousReportClient.Timeout=[TimeSpan]::FromSeconds(12)
+        }
+        $pending=@()
+        foreach($entry in @($script:AnonymousReportTasks)){
+            if($entry.Task.IsCompleted){
+                try{$response=$entry.Task.GetAwaiter().GetResult();$response.Dispose()}catch{}
+                try{$entry.Content.Dispose()}catch{}
+            }else{$pending+=,$entry}
+        }
+        $script:AnonymousReportTasks=$pending
+        if($script:AnonymousReportTasks.Count -ge 8){return}
+        $payload=[ordered]@{
+            app='Luna';version=$AppVersion;windows=[Environment]::OSVersion.VersionString
+            error='LUNA_DESKTOP_ERROR';module=(Protect-AnonymousReportText $Module)
+            log="$safeTitle — $safeMessage"
+        }|ConvertTo-Json -Compress
+        $content=New-Object Net.Http.StringContent -ArgumentList ($payload,[Text.Encoding]::UTF8,'application/json')
+        $task=$script:AnonymousReportClient.PostAsync("$DefaultBackendBaseUrl/api/error-report",$content)
+        $script:AnonymousReportTasks+=,@{Task=$task;Content=$content}
+        Add-AppLog '[INFO] Анонимный диагностический отчёт поставлен в очередь.'
+    }catch{Add-AppLog '[WARN] Не удалось поставить анонимный отчёт в очередь.'}
+}
 function Get-LunaRoutingRules {
     $rules=@()
     if($State.settings.mode -eq 'TUN'){
@@ -2136,7 +2181,7 @@ $xamlText=@'
     <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"><StackPanel>
      <Image Name="BrandIcon" Width="76" Height="76" HorizontalAlignment="Left" Stretch="UniformToFill" Margin="0,0,0,10"/>
      <TextBlock Text="Luna" FontSize="29" FontWeight="SemiBold" Foreground="#FFFFFF"/>
-     <TextBlock Text="VPN · 1.5.1-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
+     <TextBlock Text="VPN · 1.5.2-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
      <Button Name="NavHome" Content="◉  Подключение" HorizontalContentAlignment="Left"/>
      <Button Name="NavServers" Content="◫  Серверы" HorizontalContentAlignment="Left"/>
      <Button Name="NavSubs" Content="↻  Подписки" HorizontalContentAlignment="Left"/>
@@ -2261,13 +2306,13 @@ $xamlText=@'
      <TextBlock Text="DNS-сервер" Margin="0,12,0,0"/><TextBox Name="DnsBox" Width="260" HorizontalAlignment="Left"/>
      <CheckBox Name="AutoStart" Content="Запускать вместе с Windows" Margin="5,15"/><CheckBox Name="StartMinimized" Content="Запускать и сворачивать в системный трей" Margin="5"/>
      <TextBlock Text="ФУНКЦИИ В РАЗРАБОТКЕ · появятся в следующих обновлениях" Foreground="#FFD166" Margin="4,16,0,6"/>
-     <CheckBox Name="AutoConnect" Content="Автоподключение — в разработке" IsEnabled="False"/><CheckBox Name="KillSwitch" Content="Kill Switch — в разработке" IsEnabled="False"/><CheckBox Name="DnsProtection" Content="Расширенная защита DNS — в разработке" IsEnabled="False"/><CheckBox Name="EnableIPv6" Content="Управление IPv6 — в разработке" IsEnabled="False"/><CheckBox Name="WebRtcProtection" Content="Защита WebRTC — в разработке" IsEnabled="False"/><CheckBox Name="DnsLeakProtection" Content="Блокировка утечек DNS — в разработке" IsEnabled="False"/><CheckBox Name="CheckUpdates" Content="Автопроверка обновлений — в разработке" IsEnabled="False"/><CheckBox Name="AnonymousStats" Content="Разрешить будущие анонимные отчёты (отправка в разработке)"/>
+     <CheckBox Name="AutoConnect" Content="Автоподключение — в разработке" IsEnabled="False"/><CheckBox Name="KillSwitch" Content="Kill Switch — в разработке" IsEnabled="False"/><CheckBox Name="DnsProtection" Content="Расширенная защита DNS — в разработке" IsEnabled="False"/><CheckBox Name="EnableIPv6" Content="Управление IPv6 — в разработке" IsEnabled="False"/><CheckBox Name="WebRtcProtection" Content="Защита WebRTC — в разработке" IsEnabled="False"/><CheckBox Name="DnsLeakProtection" Content="Блокировка утечек DNS — в разработке" IsEnabled="False"/><CheckBox Name="CheckUpdates" Content="Автопроверка обновлений — в разработке" IsEnabled="False"/><CheckBox Name="AnonymousStats" Content="Отправлять анонимные диагностические отчёты"/>
      <StackPanel Orientation="Horizontal" Margin="0,18,0,0"><Button Name="SaveSettings" Content="Сохранить"/><Button Name="InstallCore" Content="Установить Xray-core"/></StackPanel>
      <TextBlock Text="System proxy поддерживает исключения сайтов, IP, приложений и игр для proxy-aware HTTP/HTTPS. TUN перехватывает системный TCP/UDP-трафик. Luna запросит права администратора только для TUN." Foreground="#858BA8" TextWrapping="Wrap" Margin="4,18"/>
     </StackPanel></ScrollViewer>
    </Grid>
    <Grid Name="ExpertsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="Для экспертов" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Сейчас полностью поддерживается только Xray-core. Остальные движки появятся в следующих обновлениях." TextWrapping="Wrap" Foreground="#FFD166" Margin="4,8,0,18"/><TextBlock Text="Сетевой движок"/><ComboBox Name="EngineBox" Width="390" HorizontalAlignment="Left"><ComboBoxItem Content="Xray-core"/><ComboBoxItem Content="Sing-box — в разработке" IsEnabled="False"/><ComboBoxItem Content="Clash Meta — в разработке" IsEnabled="False"/><ComboBoxItem Content="Hysteria2 — в разработке" IsEnabled="False"/><ComboBoxItem Content="WireGuard — в разработке" IsEnabled="False"/><ComboBoxItem Content="OpenVPN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="EngineStatus" Text="● Xray-core установлен" Foreground="#65E6A7" Margin="5,8"/><Button Name="ResetSettings" Content="Сбросить все настройки" Width="220" HorizontalAlignment="Left" Margin="0,25,0,0"/></StackPanel></Grid>
-   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.5.1-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
+   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.5.2-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
    <Border Name="LoadingOverlay" Panel.ZIndex="50" Background="#D90B0D16" CornerRadius="14" Visibility="Collapsed">
     <StackPanel Width="360" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Name="LoadingText" Text="Загрузка…" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,14"/><ProgressBar Height="7" IsIndeterminate="True" Foreground="#8C7CFF" Background="#262A43"/></StackPanel>
    </Border>
@@ -2625,7 +2670,7 @@ function Show-TelemetryConsentDialog {
  <Grid Margin="18">
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <StackPanel><TextBlock Text="Анонимные отчёты о работе" FontSize="19" FontWeight="SemiBold"/><TextBlock Text="Выбор можно изменить в настройках Luna." FontSize="12" Foreground="#BCAEFF" Margin="0,3,0,8"/></StackPanel>
-  <StackPanel Grid.Row="1"><TextBlock Text="Разрешить анонимные диагностические отчёты для поиска ошибок?" FontSize="14" TextWrapping="Wrap"/><Border Background="#111536" CornerRadius="9" Padding="9" Margin="0,8,0,7"><TextBlock Text="VPN-конфигурации, UUID, ключи, IP-адрес и история сайтов не включаются. В 1.2.0 отправка ещё не активирована — сохраняется только выбор." FontSize="12" TextWrapping="Wrap" Foreground="#C8CCE0"/></Border><Button Name="PrivacyButton" Content="Политика конфиденциальности" HorizontalAlignment="Left" Padding="9,5" Background="#171B42" Foreground="#F8F9FF" BorderBrush="#56509A"/></StackPanel>
+  <StackPanel Grid.Row="1"><TextBlock Text="Разрешить анонимные диагностические отчёты для поиска ошибок?" FontSize="14" TextWrapping="Wrap"/><Border Background="#111536" CornerRadius="9" Padding="9" Margin="0,8,0,7"><TextBlock Text="При ошибках Luna отправит версию приложения и Windows, модуль и очищенное описание. VPN-конфигурации, UUID, ключи, IP-адрес, пути пользователя и история сайтов удаляются до отправки." FontSize="12" TextWrapping="Wrap" Foreground="#C8CCE0"/></Border><Button Name="PrivacyButton" Content="Политика конфиденциальности" HorizontalAlignment="Left" Padding="9,5" Background="#171B42" Foreground="#F8F9FF" BorderBrush="#56509A"/></StackPanel>
   <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"><Button Name="DeclineButton" Content="Не разрешать" MinWidth="115" Padding="11,7" Margin="4" Background="#171B42" Foreground="#F8F9FF" BorderBrush="#56509A"/><Button Name="AllowButton" Content="Разрешить" MinWidth="115" Padding="11,7" Margin="4" Background="#7658E8" Foreground="#FEFEFF" BorderBrush="#9A7BFF"/></StackPanel>
  </Grid>
 </Window>
@@ -2695,6 +2740,7 @@ function Show-Notice([string]$Title,[string]$Message,[string]$Level='INFO',[bool
     $ToastPanel.BorderBrush=switch($Level){'ERROR'{'#FF5D6C'}'WARN'{'#FFD166'}'SUCCESS'{'#55E69D'}default{'#56509A'}}
     $FixButton.Visibility=if($CanFix){'Visible'}else{'Collapsed'};$ToastPanel.Visibility='Visible'
     Add-AppLog "[$Level] $Title — $Message"
+    if($Level -eq 'ERROR'){Send-AnonymousErrorReport $Title $Message 'Desktop'}
     $script:ToastTimer.Start()
 }
 function Start-ConnectionWave {
