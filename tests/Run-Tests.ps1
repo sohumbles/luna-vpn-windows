@@ -252,6 +252,56 @@ Invoke-Test 'Desktop timer uses the strict selected-latency policy' {
     Assert-True ($applicationSource -match 'SelectedLatencyAutoGeneration') 'Stale automatic results must be invalidated'
 }
 
+Invoke-Test 'Luna Auto cache is DPAPI protected and manifest stays logical' {
+    Add-Type -AssemblyName System.Security
+    $applicationPath = @(
+        (Join-Path $PSScriptRoot '..\Luna.ps1'),
+        (Join-Path $PSScriptRoot '..\src\Luna.ps1')
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $applicationSource = Get-Content -Raw -Encoding UTF8 $applicationPath
+    $tokens=$null;$parseErrors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseInput($applicationSource,[ref]$tokens,[ref]$parseErrors)
+    Assert-Equal 0 @($parseErrors).Count 'Luna application source must parse'
+    foreach ($functionName in @('Get-Or','Get-LunaObjectValue','Protect-LunaAutoValue','Unprotect-LunaAutoValue','ConvertTo-LocalProfile','ConvertTo-LunaAutoCandidateProfile','ConvertTo-LunaAutoProfile')) {
+        $definition=$ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
+        },$true)|Select-Object -First 1
+        Assert-True ($null -ne $definition) "Function $functionName must exist"
+        Invoke-Expression $definition.Extent.Text
+    }
+    $secret='luna-auto-test-token'
+    $protected=Protect-LunaAutoValue $secret
+    Assert-True ($protected -ne $secret) 'DPAPI output cannot contain the plaintext token'
+    Assert-Equal $secret (Unprotect-LunaAutoValue $protected) 'DPAPI cache must round-trip for the current Windows user'
+    $manifest=[pscustomobject]@{
+        server=[pscustomobject]@{country='Netherlands';city='Amsterdam'}
+        candidates=@(
+            [pscustomobject]@{id='one';name='One';host='203.0.113.1';port=443;protocol='vless';uuid='00000000-0000-4000-8000-000000000001';network='tcp';security='reality';serverName='example.com';publicKey='public';shortId='01';fingerprint='chrome';priority=20;enabled=$true},
+            [pscustomobject]@{id='two';name='Two';host='203.0.113.1';port=8443;protocol='vless';uuid='00000000-0000-4000-8000-000000000001';network='ws';security='tls';serverName='203.0.113.1';path='/luna';fingerprint='chrome';priority=30;enabled=$true}
+        )
+    }
+    $logical=ConvertTo-LunaAutoProfile $manifest
+    Assert-Equal 'luna-auto' $logical.id 'Only one logical Luna Auto row must be exposed'
+    Assert-Equal 'luna-auto' $logical.source 'Logical row must use the dedicated source'
+    Assert-Equal 2 @($logical.extra.autoCandidates).Count 'All transport candidates must stay behind the logical row'
+}
+
+Invoke-Test 'Luna Auto connection path ranks and verifies transport candidates' {
+    $applicationPath = @(
+        (Join-Path $PSScriptRoot '..\Luna.ps1'),
+        (Join-Path $PSScriptRoot '..\src\Luna.ps1')
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $applicationSource = Get-Content -Raw -Encoding UTF8 $applicationPath
+    Assert-True ($applicationSource -match "AppVersion = '1\.5\.3-release'") 'Release version must be advanced'
+    Assert-True ($applicationSource -match 'function\s+Get-LunaAutoCandidates') 'Luna Auto must rank transport candidates'
+    Assert-True ($applicationSource -match 'function\s+Test-LunaProxyReady') 'Luna Auto must verify real HTTPS traffic through Xray'
+    Assert-True ($applicationSource -match 'foreach\(\$candidate in @\(Get-LunaAutoCandidates \$p\)\)') 'Luna Auto must support candidate fallback'
+    Assert-True ($applicationSource -match 'if\(-not \$p\.extra\.isLunaAuto\)') 'Existing profiles must retain their established connection branch'
+    Assert-True ($applicationSource -match 'protectedAccessToken=Protect-LunaAutoValue') 'Access token must never be cached in plaintext'
+    Assert-True ($applicationSource -match '\$snapshot\.profiles=@\(\$snapshot\.profiles\|Where-Object \{\[string\]\$_\.id -ne ''luna-auto''\}\)') 'Personal Luna Auto UUID must be excluded from state.json'
+}
+
 Invoke-Test 'Split Tunneling compiles to native Xray TUN routing' {
     $applicationPath = @(
         (Join-Path $PSScriptRoot '..\Luna.ps1'),
@@ -436,7 +486,7 @@ Invoke-Test 'JSON subscription outbound without tag builds in TUN mode' {
 
 $elapsed = [DateTimeOffset]::UtcNow - $script:StartedAt
 Write-Host ''
-Write-Host ('Luna 1.5.2 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
+Write-Host ('Luna 1.5.3 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
 
 if ($script:Failed -ne 0) { exit 1 }
 exit 0

@@ -1,9 +1,9 @@
-# Luna 1.5.2-release — Windows 10/11 proxy/VPN client
+# Luna 1.5.3-release — Windows 10/11 proxy/VPN client
 # Split routing for System Proxy and native Xray TUN modes.
 [CmdletBinding()]
 param()
 
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, Microsoft.VisualBasic, System.Net.Http
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, Microsoft.VisualBasic, System.Net.Http, System.Security
 
 Add-Type -TypeDefinition @'
 using System;
@@ -1516,7 +1516,7 @@ public static class LunaTrafficMeter
 }
 '@ -ReferencedAssemblies 'System.Net.Http.dll'
 
-$AppVersion = '1.5.2-release'
+$AppVersion = '1.5.3-release'
 $AppRoot = Join-Path $env:LOCALAPPDATA 'Luna'
 $LegacyRoot = Join-Path $env:LOCALAPPDATA 'LumaTunnel'
 $CoreDir = Join-Path $AppRoot 'core'
@@ -1529,6 +1529,8 @@ $BackendServerCacheFile = Join-Path $AppRoot 'backend-servers-cache.json'
 $BackendMetadataCacheFile = Join-Path $AppRoot 'backend-metadata-cache.json'
 $BackendClientConfigFile = Join-Path $AppRoot 'client-api.json'
 $DefaultBackendBaseUrl = 'https://security-luna-vpn.ru'
+$LunaAutoStateFile = Join-Path $AppRoot 'luna-auto-state.json'
+$DefaultLunaAutoBaseUrl = 'https://72.56.116.159:9445'
 New-Item -ItemType Directory -Force -Path $AppRoot, $CoreDir | Out-Null
 if(-not (Test-Path $DataFile) -and (Test-Path (Join-Path $LegacyRoot 'state.json'))){
     Copy-Item (Join-Path $LegacyRoot 'state.json') $DataFile -Force
@@ -1587,7 +1589,11 @@ function Set-LunaObjectValue($Object,[string]$Name,$Value) {
 }
 function Save-State {
     $temp="$DataFile.tmp"
-    $script:State|ConvertTo-Json -Depth 30|Set-Content -Encoding UTF8 $temp
+    $snapshot=ConvertTo-Hashtable $script:State
+    # Luna Auto contains the installation's personal VLESS UUID. It is restored
+    # from the DPAPI-protected Luna Auto cache and must never enter state.json.
+    $snapshot.profiles=@($snapshot.profiles|Where-Object {[string]$_.id -ne 'luna-auto'})
+    $snapshot|ConvertTo-Json -Depth 30|Set-Content -Encoding UTF8 $temp
     Move-Item -LiteralPath $temp -Destination $DataFile -Force
 }
 function Load-State {
@@ -1658,6 +1664,8 @@ $script:BackendConfig = $null
 $script:BackendLatestVersion = $null
 $script:BackendLatestNews = $null
 $script:BackendLatestChangelog = $null
+$script:LunaAutoSyncInProgress = $false
+$script:ActiveConnectionProfile = $null
 $script:RouteQualityService = New-Object RouteQualityService -ArgumentList 4500,3
 $script:RouteTargets = [RouteCheckTarget[]]@(
     (New-Object RouteCheckTarget -ArgumentList 'youtube','YouTube','https://rr2---sn-gvnuxaxjvh-5c5l.googlevideo.com/generate_204','Server: gvs','http'),
@@ -1894,6 +1902,207 @@ function Write-AtomicJson([string]$Path,$Value) {
     }finally{
         if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue}
     }
+}
+function Protect-LunaAutoValue([string]$Value) {
+    if([string]::IsNullOrEmpty($Value)){return ''}
+    $bytes=[Text.Encoding]::UTF8.GetBytes($Value)
+    $protected=[Security.Cryptography.ProtectedData]::Protect(
+        $bytes,
+        $null,
+        [Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    return [Convert]::ToBase64String($protected)
+}
+function Unprotect-LunaAutoValue([string]$Value) {
+    if([string]::IsNullOrWhiteSpace($Value)){return ''}
+    try{
+        $protected=[Convert]::FromBase64String($Value)
+        $bytes=[Security.Cryptography.ProtectedData]::Unprotect(
+            $protected,
+            $null,
+            [Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        return [Text.Encoding]::UTF8.GetString($bytes)
+    }catch{return ''}
+}
+function Get-LunaAutoBaseUrl {
+    $baseUrl=if($env:LUNA_AUTO_URL){[string]$env:LUNA_AUTO_URL}else{$DefaultLunaAutoBaseUrl}
+    $baseUrl=$baseUrl.TrimEnd('/')
+    if($baseUrl -notmatch '^https://' -and $baseUrl -notmatch '^http://(127\.0\.0\.1|localhost)(:\d+)?$'){
+        throw 'Сервис Luna Auto должен использовать HTTPS.'
+    }
+    return $baseUrl
+}
+function Get-LunaAutoState {
+    $state=@{installationId='';accessToken='';manifest=$null}
+    if(Test-Path -LiteralPath $LunaAutoStateFile){
+        try{
+            $saved=Get-Content -Raw -Encoding UTF8 -LiteralPath $LunaAutoStateFile|ConvertFrom-Json
+            if([string]$saved.installationId -match '^[0-9a-fA-F-]{36}$'){$state.installationId=[string]$saved.installationId}
+            $state.accessToken=Unprotect-LunaAutoValue ([string]$saved.protectedAccessToken)
+            $manifestJson=Unprotect-LunaAutoValue ([string]$saved.protectedManifest)
+            if($manifestJson){$state.manifest=$manifestJson|ConvertFrom-Json}
+        }catch{Add-AppLog '[WARN] Защищённый кэш Luna Auto повреждён и будет создан заново.'}
+    }
+    if(-not $state.installationId){$state.installationId=[guid]::NewGuid().ToString()}
+    return $state
+}
+function Save-LunaAutoState($AutoState) {
+    $manifestJson=if($AutoState.manifest){$AutoState.manifest|ConvertTo-Json -Depth 40 -Compress}else{''}
+    $saved=[ordered]@{
+        schemaVersion=1
+        installationId=[string]$AutoState.installationId
+        protectedAccessToken=Protect-LunaAutoValue ([string]$AutoState.accessToken)
+        protectedManifest=Protect-LunaAutoValue $manifestJson
+        updatedAt=(Get-Date).ToUniversalTime().ToString('o')
+    }
+    Write-AtomicJson $LunaAutoStateFile $saved
+}
+function Invoke-LunaAutoJson([string]$Path,[string]$Method='GET',[string]$AccessToken='',$Body=$null) {
+    $handler=New-Object Net.Http.HttpClientHandler
+    $handler.AutomaticDecompression=[Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate
+    $client=New-Object Net.Http.HttpClient -ArgumentList (,$handler)
+    $client.Timeout=[TimeSpan]::FromSeconds(20)
+    $httpMethod=if($Method -eq 'POST'){[Net.Http.HttpMethod]::Post}else{[Net.Http.HttpMethod]::Get}
+    $request=New-Object Net.Http.HttpRequestMessage -ArgumentList ($httpMethod,"$(Get-LunaAutoBaseUrl)$Path")
+    [void]$request.Headers.TryAddWithoutValidation('User-Agent',"Luna/$AppVersion")
+    [void]$request.Headers.TryAddWithoutValidation('Accept','application/json')
+    if($AccessToken){[void]$request.Headers.TryAddWithoutValidation('Authorization',"Bearer $AccessToken")}
+    if($null -ne $Body){
+        $json=$Body|ConvertTo-Json -Depth 20 -Compress
+        $request.Content=New-Object Net.Http.StringContent -ArgumentList ($json,[Text.Encoding]::UTF8,'application/json')
+    }
+    try{
+        $task=$client.SendAsync($request);Wait-UiTask $task
+        $response=$task.GetAwaiter().GetResult()
+        [void]$response.EnsureSuccessStatusCode()
+        $readTask=$response.Content.ReadAsStringAsync();Wait-UiTask $readTask
+        $content=[string]$readTask.GetAwaiter().GetResult()
+        if([string]::IsNullOrWhiteSpace($content)){throw 'Сервис Luna Auto вернул пустой ответ.'}
+        return $content|ConvertFrom-Json
+    }finally{
+        if($request.Content){$request.Content.Dispose()}
+        $request.Dispose();$client.Dispose();$handler.Dispose()
+    }
+}
+function ConvertTo-LunaAutoCandidateProfile($Candidate) {
+    $server=[pscustomobject]@{
+        id=[string](Get-LunaObjectValue $Candidate 'id' '')
+        name=[string](Get-LunaObjectValue $Candidate 'name' 'Luna Auto')
+        host=[string](Get-LunaObjectValue $Candidate 'host' '')
+        port=[int](Get-LunaObjectValue $Candidate 'port' 443)
+        protocol=[string](Get-LunaObjectValue $Candidate 'protocol' 'vless')
+        enabled=[bool](Get-LunaObjectValue $Candidate 'enabled' $true)
+        available=[bool](Get-LunaObjectValue $Candidate 'available' $true)
+        ping=Get-LunaObjectValue $Candidate 'ping' $null
+        country=[string](Get-LunaObjectValue $Candidate 'country' '')
+        city=[string](Get-LunaObjectValue $Candidate 'city' '')
+        config='';load=$null;updatedAt=''
+        uuid=[string](Get-LunaObjectValue $Candidate 'uuid' '')
+        password='';network=[string](Get-LunaObjectValue $Candidate 'network' 'tcp')
+        security=[string](Get-LunaObjectValue $Candidate 'security' 'none')
+        flow=[string](Get-LunaObjectValue $Candidate 'flow' '')
+        sni=[string](Get-LunaObjectValue $Candidate 'sni' (Get-LunaObjectValue $Candidate 'serverName' ''))
+        serverName=[string](Get-LunaObjectValue $Candidate 'serverName' '')
+        publicKey=[string](Get-LunaObjectValue $Candidate 'publicKey' '')
+        shortId=[string](Get-LunaObjectValue $Candidate 'shortId' '')
+        spiderX=[string](Get-LunaObjectValue $Candidate 'spiderX' '/')
+        fingerprint=[string](Get-LunaObjectValue $Candidate 'fingerprint' 'chrome')
+        path=[string](Get-LunaObjectValue $Candidate 'path' '')
+        hostHeader=[string](Get-LunaObjectValue $Candidate 'hostHeader' '')
+        serviceName=[string](Get-LunaObjectValue $Candidate 'serviceName' '')
+    }
+    $profile=ConvertTo-LocalProfile $server 'luna-auto-candidate'
+    $profile['priority']=[int](Get-LunaObjectValue $Candidate 'priority' 100)
+    $profile['logicalId']='luna-auto'
+    return $profile
+}
+function ConvertTo-LunaAutoProfile($Manifest) {
+    $candidates=@(Get-LunaObjectValue $Manifest 'candidates' @())
+    if(-not $candidates.Count){throw 'Luna Auto не получил доступных вариантов подключения.'}
+    $first=$candidates|Sort-Object {[int](Get-LunaObjectValue $_ 'priority' 100)}|Select-Object -First 1
+    $candidateProfiles=@($candidates|ForEach-Object { ConvertTo-LunaAutoCandidateProfile $_ })
+    $server=Get-LunaObjectValue $Manifest 'server' @{}
+    $serverCountry=[string](Get-LunaObjectValue $server 'country' (Get-LunaObjectValue $first 'country' ''))
+    $serverCity=[string](Get-LunaObjectValue $server 'city' (Get-LunaObjectValue $first 'city' ''))
+    return @{
+        id='luna-auto';name='Luna Auto';country=$serverCountry
+        city=$serverCity;host=[string](Get-LunaObjectValue $first 'host' '');port=[int](Get-LunaObjectValue $first 'port' 443)
+        protocol='vless';enabled=$true;source='luna-auto';status='Автоматический выбор'
+        healthStatus='Доступен';available=$true;latency='—';favorite=$false;subscriptionId='';raw=''
+        extra=@{
+            id=[string](Get-LunaObjectValue $first 'uuid' '')
+            network=[string](Get-LunaObjectValue $first 'network' 'tcp')
+            security=[string](Get-LunaObjectValue $first 'security' 'none')
+            flow=[string](Get-LunaObjectValue $first 'flow' '')
+            sni=[string](Get-LunaObjectValue $first 'sni' (Get-LunaObjectValue $first 'serverName' ''))
+            publicKey=[string](Get-LunaObjectValue $first 'publicKey' '')
+            shortId=[string](Get-LunaObjectValue $first 'shortId' '')
+            spiderX=[string](Get-LunaObjectValue $first 'spiderX' '/')
+            fingerprint=[string](Get-LunaObjectValue $first 'fingerprint' 'chrome')
+            path=[string](Get-LunaObjectValue $first 'path' '')
+            hostHeader=[string](Get-LunaObjectValue $first 'hostHeader' '')
+            serviceName=[string](Get-LunaObjectValue $first 'serviceName' '')
+            isLunaAuto=$true;autoCandidates=$candidateProfiles
+        }
+    }
+}
+function Set-LunaAutoProfile($Manifest) {
+    $profile=ConvertTo-LunaAutoProfile $Manifest
+    $State.profiles=@($State.profiles|Where-Object {$_.id -ne 'luna-auto'})
+    $State.profiles=@($profile)+@($State.profiles)
+    if(-not $State.selectedId){$State.selectedId='luna-auto'}
+    Save-State
+    return $profile
+}
+function Initialize-LunaAutoProfile {
+    $autoState=Get-LunaAutoState
+    Save-LunaAutoState $autoState
+    if($autoState.manifest){
+        try{
+            [void](Set-LunaAutoProfile $autoState.manifest)
+            Add-AppLog '[INFO] Luna Auto загружен из защищённого локального кэша.'
+            return $true
+        }catch{Add-AppLog "[WARN] Не удалось загрузить кэш Luna Auto: $($_.Exception.Message)"}
+    }
+    return $false
+}
+function Sync-LunaAutoProfile {
+    if($script:LunaAutoSyncInProgress){return $false}
+    $script:LunaAutoSyncInProgress=$true
+    try{
+        $autoState=Get-LunaAutoState
+        $manifest=$null
+        if($autoState.accessToken){
+            try{$manifest=Invoke-LunaAutoJson '/api/v1/manifest' 'GET' $autoState.accessToken}catch{
+                Add-AppLog '[INFO] Luna Auto обновляет персональный доступ.'
+            }
+        }
+        if(-not $manifest){
+            $bootstrap=Invoke-LunaAutoJson '/api/v1/bootstrap' 'POST' '' @{
+                installationId=[string]$autoState.installationId
+                platform='windows'
+                appVersion=$AppVersion
+            }
+            $autoState.accessToken=[string]$bootstrap.accessToken
+            $manifest=$bootstrap.manifest
+        }
+        if(-not $manifest -or -not @($manifest.candidates).Count){throw 'Сервис не вернул варианты подключения.'}
+        $autoState.manifest=$manifest
+        Save-LunaAutoState $autoState
+        [void](Set-LunaAutoProfile $manifest)
+        Add-AppLog "[SUCCESS] Luna Auto готов: $(@($manifest.candidates).Count) вариантов подключения."
+        return $true
+    }catch{
+        $cached=Get-LunaAutoState
+        if($cached.manifest){
+            try{[void](Set-LunaAutoProfile $cached.manifest)}catch{}
+            Add-AppLog "[WARN] Luna Auto использует защищённый кэш: $($_.Exception.Message)"
+            return $true
+        }
+        Add-AppLog "[WARN] Luna Auto временно недоступен: $($_.Exception.Message)"
+        return $false
+    }finally{$script:LunaAutoSyncInProgress=$false}
 }
 function ConvertFrom-LunaJson([string]$Json) {
     $parsed=$Json|ConvertFrom-Json
@@ -2181,7 +2390,7 @@ $xamlText=@'
     <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"><StackPanel>
      <Image Name="BrandIcon" Width="76" Height="76" HorizontalAlignment="Left" Stretch="UniformToFill" Margin="0,0,0,10"/>
      <TextBlock Text="Luna" FontSize="29" FontWeight="SemiBold" Foreground="#FFFFFF"/>
-     <TextBlock Text="VPN · 1.5.2-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
+     <TextBlock Text="VPN · 1.5.3-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
      <Button Name="NavHome" Content="◉  Подключение" HorizontalContentAlignment="Left"/>
      <Button Name="NavServers" Content="◫  Серверы" HorizontalContentAlignment="Left"/>
      <Button Name="NavSubs" Content="↻  Подписки" HorizontalContentAlignment="Left"/>
@@ -2312,7 +2521,7 @@ $xamlText=@'
     </StackPanel></ScrollViewer>
    </Grid>
    <Grid Name="ExpertsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="Для экспертов" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Сейчас полностью поддерживается только Xray-core. Остальные движки появятся в следующих обновлениях." TextWrapping="Wrap" Foreground="#FFD166" Margin="4,8,0,18"/><TextBlock Text="Сетевой движок"/><ComboBox Name="EngineBox" Width="390" HorizontalAlignment="Left"><ComboBoxItem Content="Xray-core"/><ComboBoxItem Content="Sing-box — в разработке" IsEnabled="False"/><ComboBoxItem Content="Clash Meta — в разработке" IsEnabled="False"/><ComboBoxItem Content="Hysteria2 — в разработке" IsEnabled="False"/><ComboBoxItem Content="WireGuard — в разработке" IsEnabled="False"/><ComboBoxItem Content="OpenVPN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="EngineStatus" Text="● Xray-core установлен" Foreground="#65E6A7" Margin="5,8"/><Button Name="ResetSettings" Content="Сбросить все настройки" Width="220" HorizontalAlignment="Left" Margin="0,25,0,0"/></StackPanel></Grid>
-   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.5.2-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
+   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.5.3-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
    <Border Name="LoadingOverlay" Panel.ZIndex="50" Background="#D90B0D16" CornerRadius="14" Visibility="Collapsed">
     <StackPanel Width="360" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Name="LoadingText" Text="Загрузка…" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,14"/><ProgressBar Height="7" IsIndeterminate="True" Foreground="#8C7CFF" Background="#262A43"/></StackPanel>
    </Border>
@@ -2884,6 +3093,7 @@ function Sync-LunaBackend([switch]$Silent) {
     $script:BackendSyncInProgress=$true
     if(-not $Silent){Set-Loading $true 'Обновляем данные сервиса Luna…'}
     try{
+        [void](Sync-LunaAutoProfile)
         try{
             $config=Invoke-LunaBackendJson '/api/config'
         }catch{
@@ -3197,7 +3407,7 @@ function Draw-LatencyGraph {
 }
 function Start-LatencyProbe {
     if(-not $script:ConnectedAt -or $script:PingTask){return}
-    $profile=$State.profiles|?{$_.id -eq $State.selectedId}|Select-Object -First 1
+    $profile=if($script:ActiveConnectionProfile){$script:ActiveConnectionProfile}else{$State.profiles|?{$_.id -eq $State.selectedId}|Select-Object -First 1}
     if(-not $profile){return}
     $script:PingTask=[LunaLatencyProbe]::MeasureTcpAsync([string]$profile.host,[int]$profile.port,3000)
 }
@@ -3232,7 +3442,7 @@ function Test-SelectedLatencyAutoRefreshAllowed {
 function Start-SelectedLatencyProbe([switch]$Automatic) {
     if($script:SelectedPingTask){return}
     if($Automatic -and -not (Test-SelectedLatencyAutoRefreshAllowed)){return}
-    $profile=$State.profiles|Where-Object {$_.id -eq $State.selectedId}|Select-Object -First 1
+    $profile=if($State.selectedId -eq 'luna-auto' -and $script:ActiveConnectionProfile){$script:ActiveConnectionProfile}else{$State.profiles|Where-Object {$_.id -eq $State.selectedId}|Select-Object -First 1}
     if(-not $profile){Update-SelectedLatencyDisplay '—';return}
     $script:SelectedPingProfileId=[string]$profile.id
     $script:SelectedPingAutomatic=[bool]$Automatic
@@ -3315,13 +3525,61 @@ function Test-AllProfileLatencies {
     Add-AppLog "Массовая проверка: доступно $available, недоступно $unavailable, всего $($profiles.Count)."
     return @{total=$profiles.Count;available=$available;unavailable=$unavailable}
 }
+function Get-LunaAutoCandidates($LogicalProfile) {
+    $candidates=@($LogicalProfile.extra.autoCandidates)
+    if(-not $candidates.Count){throw 'Luna Auto не содержит вариантов подключения.'}
+    $jobs=@()
+    foreach($candidate in $candidates){
+        try{
+            $client=New-Object Net.Sockets.TcpClient
+            $watch=[Diagnostics.Stopwatch]::StartNew()
+            $task=$client.ConnectAsync([string]$candidate.host,[int]$candidate.port)
+            $jobs+=,[pscustomobject]@{Profile=$candidate;Client=$client;Watch=$watch;Task=$task;Done=$false;Latency=-1}
+        }catch{
+            $jobs+=,[pscustomobject]@{Profile=$candidate;Client=$null;Watch=$null;Task=$null;Done=$true;Latency=-1}
+        }
+    }
+    while(@($jobs|Where-Object {-not $_.Done}).Count){
+        foreach($job in @($jobs|Where-Object {-not $_.Done})){
+            if($job.Task.IsCompleted -or $job.Watch.ElapsedMilliseconds -ge 2500){
+                if($job.Task.IsCompleted -and $job.Client.Connected){
+                    $job.Latency=[Math]::Max([long]1,[long]$job.Watch.ElapsedMilliseconds)
+                }
+                $job.Client.Close();$job.Done=$true
+            }
+        }
+        $Window.Dispatcher.Invoke([action]{},[Windows.Threading.DispatcherPriority]::Background)
+        Start-Sleep -Milliseconds 15
+    }
+    $ranked=@($jobs|ForEach-Object {
+        $priority=[int](Get-Or $_.Profile.priority 100)
+        $score=if($_.Latency -ge 0){[long]$_.Latency+([long]$priority*5)}else{100000+([long]$priority*5)}
+        [pscustomobject]@{Profile=$_.Profile;Score=$score;Latency=$_.Latency}
+    }|Sort-Object Score)
+    foreach($item in $ranked){
+        $item.Profile.latency=if($item.Latency -ge 0){"$($item.Latency) ms"}else{'таймаут'}
+    }
+    return @($ranked|ForEach-Object {$_.Profile})
+}
+function Test-LunaProxyReady([int]$HttpProxyPort) {
+    $handler=New-Object Net.Http.HttpClientHandler
+    $handler.Proxy=New-Object Net.WebProxy -ArgumentList ("http://127.0.0.1:$HttpProxyPort")
+    $handler.UseProxy=$true
+    $client=New-Object Net.Http.HttpClient -ArgumentList (,$handler)
+    $client.Timeout=[TimeSpan]::FromSeconds(8)
+    try{
+        $task=$client.GetStringAsync('https://api.ipify.org');Wait-UiTask $task
+        $value=[string]$task.GetAwaiter().GetResult()
+        return [bool]($value.Trim() -match '^[0-9a-fA-F:.]+$')
+    }catch{return $false}finally{$client.Dispose();$handler.Dispose()}
+}
 function Stop-Tunnel {
     Stop-RouteQualityCheck
     $script:RouteVpnResults=@{}
     $script:SelectedLatencyAutoGeneration=[int64]($script:SelectedLatencyAutoGeneration+1)
     try{[LunaTrafficMeter]::Stop()}catch{}
     if($script:CoreProcess -and -not $script:CoreProcess.HasExited){Stop-Process -Id $script:CoreProcess.Id -Force}
-    $script:CoreProcess=$null; Set-SystemProxy $false
+    $script:CoreProcess=$null;$script:ActiveConnectionProfile=$null; Set-SystemProxy $false
     $script:PingTask=$null
     $script:ConnectedAt=$null;$ConnectLabel.Text='ПОДКЛЮЧИТЬ';$SessionTime.Text='00:00:00';$ConnectionStatus.Text='Нет подключения';$ConnectButton.BorderBrush='#7567FF'
     $script:NetworkStart=$null;$script:NetworkLast=$null;$script:NetworkLastAt=$null;$script:SpeedSamples=@()
@@ -3336,9 +3594,10 @@ function Start-Tunnel {
     $core=Get-CorePath; if(-not $core){Show-Notice 'Требуется компонент' 'Сначала установите Xray-core в настройках.' 'WARN';return}
     if($State.settings.mode -eq 'TUN' -and (Request-TunElevation)){return}
     $p=$State.profiles|?{$_.id -eq $State.selectedId}|Select-Object -First 1
+    $logicalProfile=$p
     if(-not $p){Show-Notice 'Сервер не выбран' 'Добавьте и выберите сервер.' 'WARN';return}
     if($null -ne $p.enabled -and -not [bool]$p.enabled){Show-Notice 'Сервер отключён' 'Этот сервер отключён в локальной конфигурации.' 'WARN';return}
-    if($p.extra.security -eq 'reality' -and (-not $p.extra.publicKey -or -not $p.extra.shortId)){
+    if(-not $p.extra.isLunaAuto -and $p.extra.security -eq 'reality' -and (-not $p.extra.publicKey -or -not $p.extra.shortId)){
         Show-Notice 'Неполная конфигурация' 'Для Reality-сервера не заполнены publicKey или shortId.' 'ERROR';return
     }
     try{
@@ -3359,27 +3618,77 @@ function Start-Tunnel {
             }
             if(-not (Test-Path $wintunTarget)){throw 'Не найден wintun.dll. Переустановите Luna или Xray-core.'}
         }
-        $configJson=Build-XrayConfig $p $xrayPort|ConvertTo-Json -Depth 50
-        [IO.File]::WriteAllText($ConfigFile,$configJson,(New-Object Text.UTF8Encoding($false)))
-        $testOutput=@(& $core run -test -config $ConfigFile 2>&1)
-        if($LASTEXITCODE -ne 0){
-            $detail=($testOutput|Select-Object -Last 1)
-            Add-AppLog "Проверка Xray не пройдена: $detail"
-            throw "Конфигурация несовместима с Xray: $detail"
+        $connectedProfile=$null
+        if(-not $p.extra.isLunaAuto){
+            # Keep the established Luna connection path byte-for-byte in meaning
+            # for every existing subscription and manually added profile.
+            $configJson=Build-XrayConfig $p $xrayPort|ConvertTo-Json -Depth 50
+            [IO.File]::WriteAllText($ConfigFile,$configJson,(New-Object Text.UTF8Encoding($false)))
+            $testOutput=@(& $core run -test -config $ConfigFile 2>&1)
+            if($LASTEXITCODE -ne 0){
+                $detail=($testOutput|Select-Object -Last 1)
+                Add-AppLog "Проверка Xray не пройдена: $detail"
+                throw "Конфигурация несовместима с Xray: $detail"
+            }
+            Remove-Item $RuntimeErrorFile,$RuntimeOutputFile -Force -ErrorAction SilentlyContinue
+            $coreWorkingDirectory=Split-Path -Parent $core
+            $xrayArguments='run -config "{0}"' -f $ConfigFile
+            $script:CoreProcess=Start-Process -FilePath $core -ArgumentList $xrayArguments -WorkingDirectory $coreWorkingDirectory -WindowStyle Hidden -RedirectStandardError $RuntimeErrorFile -RedirectStandardOutput $RuntimeOutputFile -PassThru
+            Start-Sleep -Milliseconds 800
+            if($script:CoreProcess.HasExited){
+                $detail=''
+                if(Test-Path $RuntimeErrorFile){$detail=(Get-Content $RuntimeErrorFile -Tail 1)}
+                if(-not $detail -and (Test-Path $RuntimeOutputFile)){$detail=(Get-Content $RuntimeOutputFile -Tail 1)}
+                if(-not $detail){$detail='Xray завершился без сообщения.'}
+                Add-AppLog "Xray завершился: $detail"
+                throw $detail
+            }
+            $connectedProfile=$p
+        }else{
+            $attempt=0
+            foreach($candidate in @(Get-LunaAutoCandidates $p)){
+                $attempt++
+                if($candidate.extra.security -eq 'reality' -and (-not $candidate.extra.publicKey -or -not $candidate.extra.shortId)){
+                    Add-AppLog "[WARN] Luna Auto пропустил неполный Reality-вариант: $($candidate.name)"
+                    continue
+                }
+                try{
+                    $configJson=Build-XrayConfig $candidate $xrayPort|ConvertTo-Json -Depth 50
+                    [IO.File]::WriteAllText($ConfigFile,$configJson,(New-Object Text.UTF8Encoding($false)))
+                    $testOutput=@(& $core run -test -config $ConfigFile 2>&1)
+                    if($LASTEXITCODE -ne 0){
+                        $detail=($testOutput|Select-Object -Last 1)
+                        throw "Конфигурация несовместима с Xray: $detail"
+                    }
+                    Remove-Item $RuntimeErrorFile,$RuntimeOutputFile -Force -ErrorAction SilentlyContinue
+                    $coreWorkingDirectory=Split-Path -Parent $core
+                    $xrayArguments='run -config "{0}"' -f $ConfigFile
+                    $script:CoreProcess=Start-Process -FilePath $core -ArgumentList $xrayArguments -WorkingDirectory $coreWorkingDirectory -WindowStyle Hidden -RedirectStandardError $RuntimeErrorFile -RedirectStandardOutput $RuntimeOutputFile -PassThru
+                    Start-Sleep -Milliseconds 800
+                    if($script:CoreProcess.HasExited){
+                        $detail=''
+                        if(Test-Path $RuntimeErrorFile){$detail=(Get-Content $RuntimeErrorFile -Tail 1)}
+                        if(-not $detail -and (Test-Path $RuntimeOutputFile)){$detail=(Get-Content $RuntimeOutputFile -Tail 1)}
+                        if(-not $detail){$detail='Xray завершился без сообщения.'}
+                        throw $detail
+                    }
+                    if(-not (Test-LunaProxyReady ($xrayPort+1))){
+                        throw 'Контрольный HTTPS-запрос через этот маршрут не прошёл.'
+                    }
+                    $connectedProfile=$candidate
+                    break
+                }catch{
+                    Add-AppLog "[WARN] Luna Auto: вариант $attempt не прошёл проверку: $($_.Exception.Message)"
+                    if($script:CoreProcess -and -not $script:CoreProcess.HasExited){
+                        Stop-Process -Id $script:CoreProcess.Id -Force -ErrorAction SilentlyContinue
+                    }
+                    $script:CoreProcess=$null
+                }
+            }
+            if(-not $connectedProfile){throw 'Ни один маршрут Luna Auto не прошёл контрольную проверку.'}
         }
-        Remove-Item $RuntimeErrorFile,$RuntimeOutputFile -Force -ErrorAction SilentlyContinue
-        $coreWorkingDirectory=Split-Path -Parent $core
-        $xrayArguments='run -config "{0}"' -f $ConfigFile
-        $script:CoreProcess=Start-Process -FilePath $core -ArgumentList $xrayArguments -WorkingDirectory $coreWorkingDirectory -WindowStyle Hidden -RedirectStandardError $RuntimeErrorFile -RedirectStandardOutput $RuntimeOutputFile -PassThru
-        Start-Sleep -Milliseconds 800
-        if($script:CoreProcess.HasExited){
-            $detail=''
-            if(Test-Path $RuntimeErrorFile){$detail=(Get-Content $RuntimeErrorFile -Tail 1)}
-            if(-not $detail -and (Test-Path $RuntimeOutputFile)){$detail=(Get-Content $RuntimeOutputFile -Tail 1)}
-            if(-not $detail){$detail='Xray завершился без сообщения.'}
-            Add-AppLog "Xray завершился: $detail"
-            throw $detail
-        }
+        $p=$connectedProfile
+        $script:ActiveConnectionProfile=if($logicalProfile.extra.isLunaAuto){$p}else{$null}
         $splitProcesses=@();$splitDomains=@();$splitIps=@()
         if([bool]$State.settings.splitEnabled){
             $splitProcesses=@($State.settings.splitApps+$State.settings.splitGames|Where-Object {$_}|Select-Object -Unique)
@@ -3391,7 +3700,8 @@ function Start-Tunnel {
         $script:ConnectedAt=Get-Date;$script:NetworkStart=Get-NetworkTotals;$script:NetworkLast=$script:NetworkStart;$script:NetworkLastAt=$script:ConnectedAt
         $script:SpeedSamples=@([pscustomobject]@{time=$script:ConnectedAt;received=[int64]$script:NetworkStart.received;sent=[int64]$script:NetworkStart.sent})
         $ConnectLabel.Text='ПОДКЛЮЧЕНО';$ConnectionStatus.Text='Защищённый маршрут активен';$ConnectButton.BorderBrush='#74E5B2';$CoreStatus.Text='● VPN активен';$CoreStatus.Foreground='#74E5B2';$ProtectionDetail.Text='Соединение защищено.'
-        Set-TrayStatus "Luna VPN — подключено: $($p.name)"
+        $trayName=if($logicalProfile.extra.isLunaAuto){"Luna Auto · $($p.name)"}else{$p.name}
+        Set-TrayStatus "Luna VPN — подключено: $trayName"
         $StatCountry.Text="Страна: $(Get-Or $p.country 'не указана')";$StatEncryption.Text="Шифрование: $($p.protocol.ToUpper()) / $(Get-Or $p.extra.security 'none')"
         $StatIPv4.Text='Публичный IPv4: в разработке';$StatProvider.Text='Провайдер: в разработке'
         Start-ConnectionWave;Schedule-RouteQualityCheck
@@ -3638,7 +3948,7 @@ $LanguageBox.Add_SelectionChanged($restartRequiredChanged);$ThemeBox.Add_Selecti
     if($ModeBox.SelectedIndex -ge 0){$State.settings.mode=if($ModeBox.SelectedIndex -eq 1){'TUN'}else{'System proxy'};$HomeModeBox.SelectedIndex=$ModeBox.SelectedIndex;$SplitScopeBox.SelectedIndex=$ModeBox.SelectedIndex;$ModeLabel.Text=$State.settings.mode}
 })
 foreach($settingToggle in @($AutoStart,$StartMinimized,$AutoConnect,$KillSwitch,$DnsProtection,$EnableIPv6,$WebRtcProtection,$DnsLeakProtection,$CheckUpdates,$AnonymousStats)){$settingToggle.Add_Click($markSettingsDirty)}
-Initialize-ServerCatalog;Refresh-CoreStatus;Refresh-Profiles;Refresh-Subscriptions;Initialize-SystemTray;Refresh-RouteQualityView;Update-RouteComparisonSummary;$timer.Start()
+    Initialize-ServerCatalog;Initialize-LunaAutoProfile;Refresh-CoreStatus;Refresh-Profiles;Refresh-Subscriptions;Initialize-SystemTray;Refresh-RouteQualityView;Update-RouteComparisonSummary;$timer.Start()
 $script:ConsentPromptActive=$false
 $script:BackendStartupSyncDone=$false
 $script:StartHidden=$env:LUNA_START_IN_TRAY -eq '1'

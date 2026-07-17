@@ -4,7 +4,7 @@ Luna is a Windows desktop client for managing Xray-based VPN/proxy profiles.
 The interface is implemented with WPF and PowerShell, while the native launcher
 hosts PowerShell in-process without displaying a console window.
 
-Current source version: **1.5.2-release**.
+Current source version: **1.5.3-release**.
 
 Official website: https://security-luna-vpn.ru/
 
@@ -14,6 +14,7 @@ Luna SpeedTest: https://security-luna-vpn.ru/speedtest
 
 - VLESS Reality, VMess, Trojan and Shadowsocks profile import;
 - subscriptions and server catalogue;
+- the official and only active VPN connection from the Luna project;
 - System Proxy mode and native Xray TUN mode for Windows 10/11;
 - working Split Tunneling exclusions for websites, IPv4/IPv6 addresses and
   CIDR networks, applications and games in both System Proxy and TUN modes;

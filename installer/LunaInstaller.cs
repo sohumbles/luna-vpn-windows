@@ -14,13 +14,13 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Luna")]
 [assembly: AssemblyProduct("Luna")]
 [assembly: AssemblyCopyright("Copyright © 2026")]
-[assembly: AssemblyVersion("1.5.2.0")]
-[assembly: AssemblyFileVersion("1.5.2.0")]
-[assembly: AssemblyInformationalVersion("1.5.2-release")]
+[assembly: AssemblyVersion("1.5.3.0")]
+[assembly: AssemblyFileVersion("1.5.3.0")]
+[assembly: AssemblyInformationalVersion("1.5.3-release")]
 
 internal static class LunaInstaller
 {
-    private const string Version = "1.5.2-release";
+    private const string Version = "1.5.3-release";
     private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\LunaVPN";
 
     private static readonly string DefaultInstallDirectory = Path.Combine(
@@ -271,7 +271,7 @@ internal static class LunaInstaller
             };
             Label details = new Label
             {
-                Text = "Версия 1.5.2-release\r\n" +
+                Text = "Версия 1.5.3-release\r\n" +
                        "Автономная установка для Windows 10 и Windows 11 x64.\r\n\r\n" +
                        "Папка: " + installDirectory,
                 ForeColor = Color.FromArgb(196, 202, 226),
@@ -344,7 +344,7 @@ internal static class LunaInstaller
                 ResultCode = 0;
                 status.Text = "Luna установлена.";
                 MessageBox.Show(
-                    "Установка Luna 1.5.2-release завершена.",
+                    "Установка Luna 1.5.3-release завершена.",
                     "Luna",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
