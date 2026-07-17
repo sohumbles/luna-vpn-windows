@@ -4,7 +4,7 @@ Luna is a Windows desktop client for managing Xray-based VPN/proxy profiles.
 The interface is implemented with WPF and PowerShell, while the native launcher
 hosts PowerShell in-process without displaying a console window.
 
-Current source version: **1.5.3-release**.
+Current source version: **1.5.4-release**.
 
 Official website: https://security-luna-vpn.ru/
 
@@ -27,6 +27,8 @@ Luna SpeedTest: https://security-luna-vpn.ru/speedtest
 - comparison of service availability without VPN and through the selected VPN;
 - DNS, TCP, tunnel, TLS, HTTP, TTFB and response-validation phases;
 - single-instance protection and system tray integration.
+- verified in-app updates with settings backup and automatic installer launch;
+- a persistent notification center for updates, connections and errors.
 
 Route-quality diagnostics are not a speed test. They use short HTTPS requests
 and report the measured result, timeout or protocol error without replacing it

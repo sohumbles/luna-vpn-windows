@@ -293,7 +293,7 @@ Invoke-Test 'Luna Auto connection path ranks and verifies transport candidates' 
         (Join-Path $PSScriptRoot '..\src\Luna.ps1')
     ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     $applicationSource = Get-Content -Raw -Encoding UTF8 $applicationPath
-    Assert-True ($applicationSource -match "AppVersion = '1\.5\.3-release'") 'Release version must be advanced'
+    Assert-True ($applicationSource -match "AppVersion = '1\.5\.4-release'") 'Release version must be advanced'
     Assert-True ($applicationSource -match 'function\s+Get-LunaAutoCandidates') 'Luna Auto must rank transport candidates'
     Assert-True ($applicationSource -match 'function\s+Test-LunaProxyReady') 'Luna Auto must verify real HTTPS traffic through Xray'
     Assert-True ($applicationSource -match 'foreach\(\$candidate in @\(Get-LunaAutoCandidates \$p\)\)') 'Luna Auto must support candidate fallback'
@@ -484,9 +484,35 @@ Invoke-Test 'JSON subscription outbound without tag builds in TUN mode' {
     Assert-Equal 1 @($config.inbounds | Where-Object { $_.protocol -eq 'tun' }).Count 'TUN inbound must be added'
 }
 
+Invoke-Test 'Automatic updater preserves every Luna setting and split rule' {
+    $applicationSource = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot '..\src\Luna.ps1')
+    $updaterSource = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot '..\src\LunaUpdater.cs')
+    Assert-True ($applicationSource -match "notifications = @\(\)") 'Notification history must be part of persistent state'
+    Assert-True ($applicationSource -match '<CheckBox Name="CheckUpdates" Content="[^"]+"/>') 'Automatic update setting must be enabled in the UI'
+    Assert-True ($applicationSource.Contains('Get-FileHash -LiteralPath $temporaryPath -Algorithm SHA256')) 'Downloaded installers must be verified with SHA-256'
+    Assert-True ($applicationSource -match "Resolve-LunaUpdateUri") 'Update URLs must be validated'
+    foreach ($name in @('state.json','client-api.json','luna-auto-state.json','backend-servers-cache.json','backend-metadata-cache.json')) {
+        Assert-True ($updaterSource.Contains('"' + $name + '"')) "Updater backup must include $name"
+    }
+    foreach ($key in @('splitDomains','splitIps','splitApps','splitGames')) {
+        Assert-True ($applicationSource.Contains($key)) "Persistent state must include $key"
+    }
+    Assert-True ($updaterSource -match 'RestoreMissingState') 'Updater must restore missing state after installation'
+}
+
+Invoke-Test 'Update and notification controls are present in valid WPF XAML' {
+    $applicationSource = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot '..\src\Luna.ps1')
+    $match = [regex]::Match($applicationSource, "(?s)\`$xamlText=@'\r?\n(.*?)\r?\n'@")
+    Assert-True $match.Success 'Main WPF XAML must be present'
+    [xml]$document = $match.Groups[1].Value
+    foreach ($name in @('NotificationBell','NotificationPanel','NotificationList','CheckAppUpdateButton','InstallAppUpdateButton','ToastActionButton')) {
+        Assert-True ($null -ne $document.SelectSingleNode("//*[@Name='$name']")) "WPF control $name must exist"
+    }
+}
+
 $elapsed = [DateTimeOffset]::UtcNow - $script:StartedAt
 Write-Host ''
-Write-Host ('Luna 1.5.3 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
+Write-Host ('Luna 1.5.4 regression harness: {0} passed, {1} failed in {2:N2}s' -f $script:Passed, $script:Failed, $elapsed.TotalSeconds) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
 
 if ($script:Failed -ne 0) { exit 1 }
 exit 0

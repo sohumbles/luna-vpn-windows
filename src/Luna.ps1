@@ -1,4 +1,4 @@
-# Luna 1.5.3-release — Windows 10/11 proxy/VPN client
+# Luna 1.5.4-release — Windows 10/11 proxy/VPN client
 # Split routing for System Proxy and native Xray TUN modes.
 [CmdletBinding()]
 param()
@@ -1516,7 +1516,7 @@ public static class LunaTrafficMeter
 }
 '@ -ReferencedAssemblies 'System.Net.Http.dll'
 
-$AppVersion = '1.5.3-release'
+$AppVersion = '1.5.4-release'
 $AppRoot = Join-Path $env:LOCALAPPDATA 'Luna'
 $LegacyRoot = Join-Path $env:LOCALAPPDATA 'LumaTunnel'
 $CoreDir = Join-Path $AppRoot 'core'
@@ -1528,10 +1528,12 @@ $RuntimeOutputFile = Join-Path $AppRoot 'xray-stdout.log'
 $BackendServerCacheFile = Join-Path $AppRoot 'backend-servers-cache.json'
 $BackendMetadataCacheFile = Join-Path $AppRoot 'backend-metadata-cache.json'
 $BackendClientConfigFile = Join-Path $AppRoot 'client-api.json'
+$UpdateDir = Join-Path $AppRoot 'updates'
+$UpdateResultFile = Join-Path $AppRoot 'pending-update-result.json'
 $DefaultBackendBaseUrl = 'https://security-luna-vpn.ru'
 $LunaAutoStateFile = Join-Path $AppRoot 'luna-auto-state.json'
 $DefaultLunaAutoBaseUrl = 'https://72.56.116.159:9445'
-New-Item -ItemType Directory -Force -Path $AppRoot, $CoreDir | Out-Null
+New-Item -ItemType Directory -Force -Path $AppRoot, $CoreDir, $UpdateDir | Out-Null
 if(-not (Test-Path $DataFile) -and (Test-Path (Join-Path $LegacyRoot 'state.json'))){
     Copy-Item (Join-Path $LegacyRoot 'state.json') $DataFile -Force
 }
@@ -1543,6 +1545,7 @@ $defaultState = @{
     profiles = @()
     subscriptions = @()
     selectedId = ''
+    notifications = @()
     settings = @{
         mode='System proxy'; localPort=10808; dns='1.1.1.1'; bypassLan=$true
         blockAds=$false; autoStart=$false; startMinimized=$false
@@ -1617,7 +1620,9 @@ $script:State = Load-State
 foreach($key in $defaultState.settings.Keys){
     if(-not $script:State.settings.ContainsKey($key)){$script:State.settings[$key]=$defaultState.settings[$key]}
 }
-foreach($unfinishedSetting in @('autoConnect','killSwitch','dnsProtection','enableIPv6','webRtcProtection','dnsLeakProtection','checkUpdates')){$script:State.settings[$unfinishedSetting]=$false}
+if(-not $script:State.ContainsKey('notifications')){$script:State.notifications=@()}
+$script:State.notifications=@($script:State.notifications|Select-Object -Last 100)
+foreach($unfinishedSetting in @('autoConnect','killSwitch','dnsProtection','enableIPv6','webRtcProtection','dnsLeakProtection')){$script:State.settings[$unfinishedSetting]=$false}
 $script:State.settings.splitDomains=@($script:State.settings.splitDomains|Where-Object {$_})
 $script:State.settings.splitIps=@($script:State.settings.splitIps|Where-Object {$_})
 $script:State.settings.splitApps=@($script:State.settings.splitApps|Where-Object {$_})
@@ -1664,6 +1669,8 @@ $script:BackendConfig = $null
 $script:BackendLatestVersion = $null
 $script:BackendLatestNews = $null
 $script:BackendLatestChangelog = $null
+$script:LastUpdateNoticeVersion = ''
+$script:PendingToastAction = ''
 $script:LunaAutoSyncInProgress = $false
 $script:ActiveConnectionProfile = $null
 $script:RouteQualityService = New-Object RouteQualityService -ArgumentList 4500,3
@@ -2390,7 +2397,7 @@ $xamlText=@'
     <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"><StackPanel>
      <Image Name="BrandIcon" Width="76" Height="76" HorizontalAlignment="Left" Stretch="UniformToFill" Margin="0,0,0,10"/>
      <TextBlock Text="Luna" FontSize="29" FontWeight="SemiBold" Foreground="#FFFFFF"/>
-     <TextBlock Text="VPN · 1.5.3-release" Foreground="#BCAEFF" Margin="1,0,0,25"/>
+     <Grid Margin="1,0,0,18"><TextBlock Text="VPN · 1.5.4-release" Foreground="#BCAEFF" VerticalAlignment="Center"/><Button Name="NotificationBell" Content="♢" ToolTip="Уведомления Luna" Width="36" Height="32" Padding="0" HorizontalAlignment="Right"/><Border Name="NotificationBadge" Background="#FF5C86" CornerRadius="8" MinWidth="17" Height="17" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-4,-4,0" Visibility="Collapsed"><TextBlock Name="NotificationBadgeText" Text="0" FontSize="10" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid>
      <Button Name="NavHome" Content="◉  Подключение" HorizontalContentAlignment="Left"/>
      <Button Name="NavServers" Content="◫  Серверы" HorizontalContentAlignment="Left"/>
      <Button Name="NavSubs" Content="↻  Подписки" HorizontalContentAlignment="Left"/>
@@ -2515,17 +2522,18 @@ $xamlText=@'
      <TextBlock Text="DNS-сервер" Margin="0,12,0,0"/><TextBox Name="DnsBox" Width="260" HorizontalAlignment="Left"/>
      <CheckBox Name="AutoStart" Content="Запускать вместе с Windows" Margin="5,15"/><CheckBox Name="StartMinimized" Content="Запускать и сворачивать в системный трей" Margin="5"/>
      <TextBlock Text="ФУНКЦИИ В РАЗРАБОТКЕ · появятся в следующих обновлениях" Foreground="#FFD166" Margin="4,16,0,6"/>
-     <CheckBox Name="AutoConnect" Content="Автоподключение — в разработке" IsEnabled="False"/><CheckBox Name="KillSwitch" Content="Kill Switch — в разработке" IsEnabled="False"/><CheckBox Name="DnsProtection" Content="Расширенная защита DNS — в разработке" IsEnabled="False"/><CheckBox Name="EnableIPv6" Content="Управление IPv6 — в разработке" IsEnabled="False"/><CheckBox Name="WebRtcProtection" Content="Защита WebRTC — в разработке" IsEnabled="False"/><CheckBox Name="DnsLeakProtection" Content="Блокировка утечек DNS — в разработке" IsEnabled="False"/><CheckBox Name="CheckUpdates" Content="Автопроверка обновлений — в разработке" IsEnabled="False"/><CheckBox Name="AnonymousStats" Content="Отправлять анонимные диагностические отчёты"/>
+     <CheckBox Name="AutoConnect" Content="Автоподключение — в разработке" IsEnabled="False"/><CheckBox Name="KillSwitch" Content="Kill Switch — в разработке" IsEnabled="False"/><CheckBox Name="DnsProtection" Content="Расширенная защита DNS — в разработке" IsEnabled="False"/><CheckBox Name="EnableIPv6" Content="Управление IPv6 — в разработке" IsEnabled="False"/><CheckBox Name="WebRtcProtection" Content="Защита WebRTC — в разработке" IsEnabled="False"/><CheckBox Name="DnsLeakProtection" Content="Блокировка утечек DNS — в разработке" IsEnabled="False"/><CheckBox Name="CheckUpdates" Content="Автоматически проверять обновления"/><CheckBox Name="AnonymousStats" Content="Отправлять анонимные диагностические отчёты"/>
      <StackPanel Orientation="Horizontal" Margin="0,18,0,0"><Button Name="SaveSettings" Content="Сохранить"/><Button Name="InstallCore" Content="Установить Xray-core"/></StackPanel>
      <TextBlock Text="System proxy поддерживает исключения сайтов, IP, приложений и игр для proxy-aware HTTP/HTTPS. TUN перехватывает системный TCP/UDP-трафик. Luna запросит права администратора только для TUN." Foreground="#858BA8" TextWrapping="Wrap" Margin="4,18"/>
     </StackPanel></ScrollViewer>
    </Grid>
    <Grid Name="ExpertsPage" Visibility="Collapsed"><StackPanel><TextBlock Text="Для экспертов" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Сейчас полностью поддерживается только Xray-core. Остальные движки появятся в следующих обновлениях." TextWrapping="Wrap" Foreground="#FFD166" Margin="4,8,0,18"/><TextBlock Text="Сетевой движок"/><ComboBox Name="EngineBox" Width="390" HorizontalAlignment="Left"><ComboBoxItem Content="Xray-core"/><ComboBoxItem Content="Sing-box — в разработке" IsEnabled="False"/><ComboBoxItem Content="Clash Meta — в разработке" IsEnabled="False"/><ComboBoxItem Content="Hysteria2 — в разработке" IsEnabled="False"/><ComboBoxItem Content="WireGuard — в разработке" IsEnabled="False"/><ComboBoxItem Content="OpenVPN — в разработке" IsEnabled="False"/></ComboBox><TextBlock Name="EngineStatus" Text="● Xray-core установлен" Foreground="#65E6A7" Margin="5,8"/><Button Name="ResetSettings" Content="Сбросить все настройки" Width="220" HorizontalAlignment="Left" Margin="0,25,0,0"/></StackPanel></Grid>
-   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.5.3-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Сервис Luna обновляет каталог серверов, новости и сведения о версиях. При его недоступности локальные подписки и VPN продолжают работать." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/></StackPanel></Border></StackPanel></ScrollViewer></Grid>
+   <Grid Name="AboutPage" Visibility="Collapsed"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="О программе" FontSize="30" FontWeight="SemiBold"/><Image Name="AboutIcon" Width="120" Height="120" HorizontalAlignment="Left" Margin="0,24,0,12"/><TextBlock Text="Luna VPN" FontSize="26"/><TextBlock Text="Версия 1.5.4-release" Foreground="#BCAEFF"/><TextBlock Text="Luna Engine · Xray 26.3.27" Margin="0,16,0,0"/><TextBlock Text="Интерфейс · WPF / .NET Framework"/><TextBlock Text="Обновления Luna загружаются, проверяются по SHA-256 и устанавливаются автоматически. Перед установкой создаётся резервная копия всех настроек, подписок и правил Split Tunneling." TextWrapping="Wrap" Foreground="#9EA5C2" Margin="0,18,0,0"/><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,18,0,0"><StackPanel><TextBlock Text="СЕРВИС LUNA" Foreground="#BCAEFF" FontWeight="SemiBold"/><TextBlock Name="BackendStatusText" Text="Ожидается синхронизация…" TextWrapping="Wrap" Margin="0,8,0,0"/><TextBlock Name="UpdateStatusText" Text="Версия: проверка не выполнялась" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="LatestNewsText" Text="Новости: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><TextBlock Name="ChangelogStatusText" Text="Изменения: —" TextWrapping="Wrap" Foreground="#C8CCE0" Margin="0,7,0,0"/><StackPanel Orientation="Horizontal" Margin="0,14,0,0"><Button Name="CheckAppUpdateButton" Content="Проверить обновления" Margin="0,0,8,0"/><Button Name="InstallAppUpdateButton" Content="Установить обновление" Background="#5147B8" Visibility="Collapsed"/></StackPanel></StackPanel></Border></StackPanel></ScrollViewer></Grid>
    <Border Name="LoadingOverlay" Panel.ZIndex="50" Background="#D90B0D16" CornerRadius="14" Visibility="Collapsed">
     <StackPanel Width="360" HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Name="LoadingText" Text="Загрузка…" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,14"/><ProgressBar Height="7" IsIndeterminate="True" Foreground="#8C7CFF" Background="#262A43"/></StackPanel>
    </Border>
-   <Border Name="ToastPanel" Panel.ZIndex="70" Background="#F0181C3A" BorderBrush="#56509A" BorderThickness="1" CornerRadius="14" Padding="16" Width="420" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,18,18,0" Visibility="Collapsed"><StackPanel><DockPanel><TextBlock Name="ToastTitle" Text="Luna" FontWeight="Bold" FontSize="16"/><Button Name="CloseToast" Content="×" DockPanel.Dock="Right" Padding="7,2"/></DockPanel><TextBlock Name="ToastMessage" Text="" TextWrapping="Wrap" Foreground="#D7DAEA" Margin="0,8,0,10"/><Button Name="FixButton" Content="Исправить" HorizontalAlignment="Left" Visibility="Collapsed"/></StackPanel></Border>
+   <Border Name="ToastPanel" Panel.ZIndex="70" Background="#F0181C3A" BorderBrush="#56509A" BorderThickness="1" CornerRadius="14" Padding="16" Width="420" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,18,18,0" Visibility="Collapsed"><StackPanel><DockPanel><TextBlock Name="ToastTitle" Text="Luna" FontWeight="Bold" FontSize="16"/><Button Name="CloseToast" Content="×" DockPanel.Dock="Right" Padding="7,2"/></DockPanel><TextBlock Name="ToastMessage" Text="" TextWrapping="Wrap" Foreground="#D7DAEA" Margin="0,8,0,10"/><StackPanel Orientation="Horizontal"><Button Name="ToastActionButton" Content="Установить" HorizontalAlignment="Left" Background="#5147B8" Visibility="Collapsed"/><Button Name="FixButton" Content="Исправить" HorizontalAlignment="Left" Visibility="Collapsed"/></StackPanel></StackPanel></Border>
+   <Border Name="NotificationPanel" Panel.ZIndex="80" Background="#F50B0E29" BorderBrush="#56509A" BorderThickness="1" CornerRadius="16" Padding="16" Width="440" MaxHeight="620" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8,18,0,0" Visibility="Collapsed"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><DockPanel><TextBlock Text="Уведомления" FontSize="21" FontWeight="SemiBold"/><Button Name="CloseNotificationPanel" Content="×" DockPanel.Dock="Right" Padding="7,2"/></DockPanel><Grid Grid.Row="1" Margin="0,12,0,10"><TextBlock Name="NotificationEmpty" Text="Новых уведомлений пока нет." Foreground="#9EA5C2" HorizontalAlignment="Center" VerticalAlignment="Center"/><ListBox Name="NotificationList" Background="Transparent" BorderThickness="0"><ListBox.ItemTemplate><DataTemplate><Border Background="#101333" BorderBrush="#292B63" BorderThickness="1" CornerRadius="10" Padding="11" Margin="0,3"><StackPanel><DockPanel><TextBlock Text="{Binding title}" FontWeight="SemiBold"/><TextBlock Text="{Binding time}" DockPanel.Dock="Right" Foreground="#858BA8" FontSize="10"/></DockPanel><TextBlock Text="{Binding message}" Foreground="#C8CCE0" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></Border></DataTemplate></ListBox.ItemTemplate></ListBox></Grid><StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"><Button Name="NotificationActionButton" Content="Установить обновление" Background="#5147B8" Visibility="Collapsed"/><Button Name="MarkNotificationsRead" Content="Прочитано"/><Button Name="ClearNotifications" Content="Очистить"/></StackPanel></Grid></Border>
   </Grid>
  </Grid>
 </Window>
@@ -2625,7 +2633,7 @@ $Window.Add_SourceInitialized({
     $enabled=1
     [void][LunaDwm]::DwmSetWindowAttribute($handle,20,[ref]$enabled,4)
 })
-$names=@('HomePage','ServersPage','SubsPage','RoutesPage','LogsPage','StatsPage','SplitPage','AppsPage','SettingsPage','ExpertsPage','AboutPage','BrandIcon','AboutIcon','BackendStatusText','UpdateStatusText','LatestNewsText','ChangelogStatusText','NavHome','NavServers','NavSubs','NavRoutes','NavLogs','NavStats','NavSplit','NavApps','NavSettings','NavExperts','NavAbout','CoreStatus','ProtectionDetail','ConnectButton','ConnectLabel','WaveRing','ConnectionStatus','SelectedServer','QuickServer','HomeServerList','HomePingAllButton','HomeModeBox','SessionTime','ModeLabel','HomeUpSpeed','HomeDownSpeed','LatencyLabel','LatencyServerName','LatencyLastCheckedHome','LatencyRefreshHome','LatencyAutoRefresh','GraphValue','JitterLabel','PacketLossLabel','LatencyCanvas','LossCanvas','RouteQualityCard','RouteBaselineButton','RouteCheckButton','RouteDisconnectedMessage','RouteComparisonSummary','RouteQualityList','LoadingOverlay','LoadingText','ToastPanel','ToastTitle','ToastMessage','CloseToast','FixButton','ServerList','ServerLoadStatus','SearchBox','RefreshBackendButton','ImportClipboard','AddLink','PingAllButton','PingButton','DeleteServer','SubscriptionUrl','AddSubscription','UpdateSubscriptions','SubscriptionList','DeleteSubscription','DirectDomains','BlockDomains','BypassLan','BlockAds','SaveRoutes','LogView','LogFilter','LogSearch','LiveLogButton','ExportLogs','ClearLogs','UpSpeed','DownSpeed','ReceivedTotal','SentTotal','SystemUpSpeed','SystemDownSpeed','SystemTrafficTotal','StatIPv4','StatCountry','StatProvider','StatEncryption','SplitEnabled','SplitStatus','SplitScopeBox','SplitDomainInput','SplitDomainList','AddSplitDomain','RemoveSplitDomain','SplitIpInput','SplitIpList','AddSplitIp','RemoveSplitIp','SplitAppList','AddSplitApp','AddRunningSplitApp','RemoveSplitApp','SplitGameList','AddSplitGame','AddRunningSplitGame','RemoveSplitGame','ApplySplitRules','ExportSplitRules','ImportSplitRules','ResetSplitRules','LanguageBox','ThemeBox','ModeBox','PortBox','DnsBox','AutoStart','StartMinimized','AutoConnect','KillSwitch','DnsProtection','EnableIPv6','WebRtcProtection','DnsLeakProtection','CheckUpdates','AnonymousStats','SaveSettings','InstallCore','EngineBox','EngineStatus','ResetSettings')
+$names=@('HomePage','ServersPage','SubsPage','RoutesPage','LogsPage','StatsPage','SplitPage','AppsPage','SettingsPage','ExpertsPage','AboutPage','BrandIcon','AboutIcon','BackendStatusText','UpdateStatusText','LatestNewsText','ChangelogStatusText','CheckAppUpdateButton','InstallAppUpdateButton','NavHome','NavServers','NavSubs','NavRoutes','NavLogs','NavStats','NavSplit','NavApps','NavSettings','NavExperts','NavAbout','NotificationBell','NotificationBadge','NotificationBadgeText','NotificationPanel','CloseNotificationPanel','NotificationList','NotificationEmpty','NotificationActionButton','MarkNotificationsRead','ClearNotifications','CoreStatus','ProtectionDetail','ConnectButton','ConnectLabel','WaveRing','ConnectionStatus','SelectedServer','QuickServer','HomeServerList','HomePingAllButton','HomeModeBox','SessionTime','ModeLabel','HomeUpSpeed','HomeDownSpeed','LatencyLabel','LatencyServerName','LatencyLastCheckedHome','LatencyRefreshHome','LatencyAutoRefresh','GraphValue','JitterLabel','PacketLossLabel','LatencyCanvas','LossCanvas','RouteQualityCard','RouteBaselineButton','RouteCheckButton','RouteDisconnectedMessage','RouteComparisonSummary','RouteQualityList','LoadingOverlay','LoadingText','ToastPanel','ToastTitle','ToastMessage','CloseToast','ToastActionButton','FixButton','ServerList','ServerLoadStatus','SearchBox','RefreshBackendButton','ImportClipboard','AddLink','PingAllButton','PingButton','DeleteServer','SubscriptionUrl','AddSubscription','UpdateSubscriptions','SubscriptionList','DeleteSubscription','DirectDomains','BlockDomains','BypassLan','BlockAds','SaveRoutes','LogView','LogFilter','LogSearch','LiveLogButton','ExportLogs','ClearLogs','UpSpeed','DownSpeed','ReceivedTotal','SentTotal','SystemUpSpeed','SystemDownSpeed','SystemTrafficTotal','StatIPv4','StatCountry','StatProvider','StatEncryption','SplitEnabled','SplitStatus','SplitScopeBox','SplitDomainInput','SplitDomainList','AddSplitDomain','RemoveSplitDomain','SplitIpInput','SplitIpList','AddSplitIp','RemoveSplitIp','SplitAppList','AddSplitApp','AddRunningSplitApp','RemoveSplitApp','SplitGameList','AddSplitGame','AddRunningSplitGame','RemoveSplitGame','ApplySplitRules','ExportSplitRules','ImportSplitRules','ResetSplitRules','LanguageBox','ThemeBox','ModeBox','PortBox','DnsBox','AutoStart','StartMinimized','AutoConnect','KillSwitch','DnsProtection','EnableIPv6','WebRtcProtection','DnsLeakProtection','CheckUpdates','AnonymousStats','SaveSettings','InstallCore','EngineBox','EngineStatus','ResetSettings')
 foreach($n in $names){Set-Variable -Scope Script -Name $n -Value $Window.FindName($n)}
 $script:AppsTraffic=$Window.FindName('AppsTraffic')
 $script:AppsSummary=$Window.FindName('AppsSummary')
@@ -2798,6 +2806,7 @@ $script:ToastTimer=New-Object Windows.Threading.DispatcherTimer
 $script:ToastTimer.Interval=[TimeSpan]::FromSeconds(3)
 $script:ToastTimer.Add_Tick({
     $script:ToastTimer.Stop()
+    $script:PendingToastAction=''
     $ToastPanel.Visibility='Collapsed'
 })
 $runtimeRoot=if($PSScriptRoot){$PSScriptRoot}else{$env:LUNA_RUNTIME_DIR}
@@ -2946,13 +2955,52 @@ function Get-FriendlyError([string]$Detail) {
     if($Detail -match 'address already in use|bind'){return 'Локальный порт занят другим VPN-приложением.'}
     return $Detail
 }
-function Show-Notice([string]$Title,[string]$Message,[string]$Level='INFO',[bool]$CanFix=$false) {
+function Refresh-NotificationCenter {
+    if(-not $NotificationList){return}
+    $items=@($State.notifications|Sort-Object createdAt -Descending|ForEach-Object {
+        [pscustomobject]@{
+            id=[string]$_.id
+            title=[string]$_.title
+            message=[string]$_.message
+            level=[string]$_.level
+            action=[string]$_.action
+            read=[bool]$_.read
+            time=try{([datetime]$_.createdAt).ToLocalTime().ToString('dd.MM HH:mm')}catch{''}
+        }
+    })
+    $NotificationList.ItemsSource=$items
+    $NotificationEmpty.Visibility=if($items.Count){'Collapsed'}else{'Visible'}
+    $unread=@($State.notifications|Where-Object {-not [bool]$_.read}).Count
+    $NotificationBadgeText.Text=if($unread -gt 99){'99+'}else{[string]$unread}
+    $NotificationBadge.Visibility=if($unread){'Visible'}else{'Collapsed'}
+    $hasUpdate=@($State.notifications|Where-Object {$_.action -eq 'install-update'}).Count -gt 0
+    $NotificationActionButton.Visibility=if($hasUpdate -and $script:BackendLatestVersion -and $script:BackendLatestVersion.updateAvailable){'Visible'}else{'Collapsed'}
+}
+function Add-LunaNotification([string]$Title,[string]$Message,[string]$Level='INFO',[string]$Action='') {
+    $friendly=if($Level -in @('ERROR','WARN')){Get-FriendlyError $Message}else{$Message}
+    $item=[ordered]@{
+        id=[guid]::NewGuid().ToString()
+        title=$Title
+        message=$friendly
+        level=$Level
+        action=$Action
+        read=$false
+        createdAt=(Get-Date).ToUniversalTime().ToString('o')
+    }
+    $State.notifications=@($State.notifications+$item|Select-Object -Last 100)
+    Save-State
+    Refresh-NotificationCenter
+}
+function Show-Notice([string]$Title,[string]$Message,[string]$Level='INFO',[bool]$CanFix=$false,[string]$Action='') {
     $script:ToastTimer.Stop()
     $ToastTitle.Text=$Title
     $ToastMessage.Text=if($Level -in @('ERROR','WARN')){Get-FriendlyError $Message}else{$Message}
     $ToastPanel.BorderBrush=switch($Level){'ERROR'{'#FF5D6C'}'WARN'{'#FFD166'}'SUCCESS'{'#55E69D'}default{'#56509A'}}
+    $script:PendingToastAction=$Action
+    $ToastActionButton.Visibility=if($Action){'Visible'}else{'Collapsed'}
     $FixButton.Visibility=if($CanFix){'Visible'}else{'Collapsed'};$ToastPanel.Visibility='Visible'
     Add-AppLog "[$Level] $Title — $Message"
+    Add-LunaNotification $Title $Message $Level $Action
     if($Level -eq 'ERROR'){Send-AnonymousErrorReport $Title $Message 'Desktop'}
     $script:ToastTimer.Start()
 }
@@ -3075,6 +3123,7 @@ function Apply-BackendMetadata($Metadata,[bool]$FromCache=$false) {
             $latest=[string]$Metadata.version.latest.version
             $UpdateStatusText.Text=if($Metadata.version.updateAvailable){"Доступна версия $latest"}else{"Установлена актуальная версия $AppVersion"}
             $UpdateStatusText.Foreground=if($Metadata.version.updateAvailable){'#FFD166'}else{'#65E6A7'}
+            $InstallAppUpdateButton.Visibility=if($Metadata.version.updateAvailable){'Visible'}else{'Collapsed'}
         }
     }
     $news=@($Metadata.news|ForEach-Object{$_})
@@ -3087,6 +3136,113 @@ function Apply-BackendMetadata($Metadata,[bool]$FromCache=$false) {
         $script:BackendLatestChangelog=$entries[0]
         $ChangelogStatusText.Text="Последние изменения: $($entries[0].version) · $($entries[0].title)"
     }
+    Refresh-NotificationCenter
+}
+function Get-LunaUpdateChannel {
+    if($AppVersion -match '-beta\.'){return 'beta'}
+    return 'release'
+}
+function Get-LunaUpdateArtifact {
+    if(-not $script:BackendLatestVersion -or -not $script:BackendLatestVersion.updateAvailable -or -not $script:BackendLatestVersion.latest){return $null}
+    return @($script:BackendLatestVersion.latest.downloads|Where-Object {$_.kind -eq 'installer' -and $_.architecture -eq 'x64'}|Select-Object -First 1)[0]
+}
+function Resolve-LunaUpdateUri([string]$Value) {
+    $connection=Get-BackendConnectionSettings
+    $base=[Uri]$connection.baseUrl
+    $candidate=if([Uri]::IsWellFormedUriString($Value,[UriKind]::Absolute)){[Uri]$Value}else{New-Object Uri -ArgumentList ($base,$Value)}
+    if($candidate.Scheme -ne 'https'){throw 'Обновление Luna должно загружаться по HTTPS.'}
+    if(-not [string]::Equals($candidate.Host,$base.Host,[StringComparison]::OrdinalIgnoreCase)){throw 'Источник обновления не принадлежит официальному сервису Luna.'}
+    return $candidate.AbsoluteUri
+}
+function Check-LunaApplicationUpdate([switch]$Interactive) {
+    if($Interactive){Set-Loading $true 'Проверяем обновления Luna…'}
+    try{
+        $channel=Get-LunaUpdateChannel
+        $version=Invoke-LunaBackendJson "/api/version?current=$([Uri]::EscapeDataString($AppVersion))&channel=$channel"
+        Apply-BackendMetadata ([pscustomobject]@{config=$null;version=$version;news=@();changelog=$null}) $false
+        if($version.updateAvailable){
+            $latest=[string]$version.latest.version
+            if($script:LastUpdateNoticeVersion -ne $latest -or $Interactive){
+                $script:LastUpdateNoticeVersion=$latest
+                $level=if($version.mandatory){'WARN'}else{'INFO'}
+                Show-Notice 'Доступно обновление Luna' "Версия $latest готова к автоматической установке." $level $false 'install-update'
+            }
+        }elseif($Interactive){
+            Show-Notice 'Обновление не требуется' "Установлена актуальная версия $AppVersion." 'SUCCESS'
+        }
+        return $version
+    }catch{
+        if($Interactive){Show-Notice 'Не удалось проверить обновления' $_.Exception.Message 'WARN'}
+        else{Add-AppLog "[WARN] Не удалось проверить обновления: $($_.Exception.Message)"}
+        return $null
+    }finally{if($Interactive){Set-Loading $false}}
+}
+function Quote-LunaArgument([string]$Value) {
+    return '"' + $Value.Replace('"','\"') + '"'
+}
+function Install-LunaApplicationUpdate {
+    $artifact=Get-LunaUpdateArtifact
+    if(-not $artifact){
+        [void](Check-LunaApplicationUpdate -Interactive)
+        $artifact=Get-LunaUpdateArtifact
+    }
+    if(-not $artifact){return}
+    $latest=[string]$script:BackendLatestVersion.latest.version
+    $updater=if($env:LUNA_APP_DIR){Join-Path $env:LUNA_APP_DIR 'LunaUpdater.exe'}else{Join-Path (Split-Path -Parent $env:LUNA_EXECUTABLE_PATH) 'LunaUpdater.exe'}
+    if(-not (Test-Path -LiteralPath $updater)){Show-Notice 'Компонент обновления не найден' 'Переустановите текущую версию Luna один раз через официальный установщик.' 'ERROR';return}
+    Set-Loading $true "Загружаем Luna $latest…"
+    try{
+        Save-State
+        $downloadUri=Resolve-LunaUpdateUri ([string]$artifact.url)
+        $fileName=[IO.Path]::GetFileName(([Uri]$downloadUri).LocalPath)
+        if(-not $fileName.EndsWith('.exe',[StringComparison]::OrdinalIgnoreCase)){throw 'Backend вернул неподдерживаемый файл обновления.'}
+        $installerPath=Join-Path $UpdateDir $fileName
+        $temporaryPath="$installerPath.download"
+        $headers=@{'User-Agent'="Luna/$AppVersion";'Accept'='application/octet-stream'}
+        $response=Invoke-AsyncHttp $downloadUri $headers -AsBytes -TimeoutSeconds 240
+        [IO.File]::WriteAllBytes($temporaryPath,[byte[]]$response.Content)
+        $actualSize=(Get-Item -LiteralPath $temporaryPath).Length
+        if([int64]$artifact.size -gt 0 -and $actualSize -ne [int64]$artifact.size){throw "Размер загруженного файла не совпал: $actualSize байт."}
+        $actualHash=(Get-FileHash -LiteralPath $temporaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expectedHash=([string]$artifact.sha256).Trim().ToLowerInvariant()
+        if($expectedHash -notmatch '^[a-f0-9]{64}$' -or $actualHash -ne $expectedHash){throw 'Проверка SHA-256 не пройдена. Установка отменена.'}
+        Move-Item -LiteralPath $temporaryPath -Destination $installerPath -Force
+        $isBeta=(Get-LunaUpdateChannel) -eq 'beta'
+        $installRoot=Join-Path $env:LOCALAPPDATA $(if($isBeta){'Programs\Luna Beta'}else{'Programs\Luna'})
+        $launchTarget=Join-Path $installRoot 'Luna.exe'
+        $fallback=if($env:LUNA_EXECUTABLE_PATH){[string]$env:LUNA_EXECUTABLE_PATH}else{$launchTarget}
+        $arguments=@(
+            '--installer',(Quote-LunaArgument $installerPath),
+            '--pid',[string]$PID,
+            '--launch',(Quote-LunaArgument $launchTarget),
+            '--fallback',(Quote-LunaArgument $fallback),
+            '--data-root',(Quote-LunaArgument $AppRoot),
+            '--version',(Quote-LunaArgument $latest)
+        ) -join ' '
+        $start=New-Object Diagnostics.ProcessStartInfo
+        $start.FileName=$updater
+        $start.Arguments=$arguments
+        $start.UseShellExecute=$true
+        [void][Diagnostics.Process]::Start($start)
+        $script:AllowExit=$true
+        $Window.Close()
+        if($script:WpfApplication){$script:WpfApplication.Shutdown()}
+    }catch{
+        Remove-Item -LiteralPath "$installerPath.download" -Force -ErrorAction SilentlyContinue
+        Show-Notice 'Обновление не установлено' $_.Exception.Message 'ERROR'
+    }finally{Set-Loading $false}
+}
+function Show-PendingUpdateResult {
+    if(-not (Test-Path -LiteralPath $UpdateResultFile)){return}
+    try{
+        $result=Get-Content -Raw -Encoding UTF8 -LiteralPath $UpdateResultFile|ConvertFrom-Json
+        if($result.success){
+            Show-Notice 'Luna обновлена' "Версия $($result.version) установлена. Все настройки и исключения Split Tunneling сохранены." 'SUCCESS'
+        }else{
+            Show-Notice 'Обновление не завершено' ([string]$result.error) 'ERROR'
+        }
+    }catch{Add-AppLog "[WARN] Не удалось прочитать результат обновления: $($_.Exception.Message)"}
+    finally{Remove-Item -LiteralPath $UpdateResultFile -Force -ErrorAction SilentlyContinue}
 }
 function Sync-LunaBackend([switch]$Silent) {
     if($script:BackendSyncInProgress){return}
@@ -3110,7 +3266,10 @@ function Sync-LunaBackend([switch]$Silent) {
         }
 
         $version=$null;$news=@();$changelog=$null
-        try{$version=Invoke-LunaBackendJson "/api/version?current=$([Uri]::EscapeDataString($AppVersion))&channel=release"}catch{Add-AppLog "[WARN] Не удалось проверить версию: $($_.Exception.Message)"}
+        if([bool]$State.settings.checkUpdates){
+            $channel=Get-LunaUpdateChannel
+            try{$version=Invoke-LunaBackendJson "/api/version?current=$([Uri]::EscapeDataString($AppVersion))&channel=$channel"}catch{Add-AppLog "[WARN] Не удалось проверить версию: $($_.Exception.Message)"}
+        }
         if(-not $config.features -or $config.features.news){
             try{$news=@(Invoke-LunaBackendJson '/api/news?limit=20')}catch{Add-AppLog "[WARN] Не удалось загрузить новости: $($_.Exception.Message)"}
             try{$changelog=Invoke-LunaBackendJson '/api/changelog'}catch{Add-AppLog "[WARN] Не удалось загрузить changelog: $($_.Exception.Message)"}
@@ -3121,9 +3280,10 @@ function Sync-LunaBackend([switch]$Silent) {
 
         if($config.maintenance -and -not $Silent){
             Show-Notice 'Технические работы' (Get-Or $config.maintenanceMessage 'Подключение временно ограничено.') 'WARN'
-        }elseif($version -and $version.updateAvailable -and -not $Silent){
-            $level=if($version.mandatory){'ERROR'}else{'INFO'}
-            Show-Notice 'Доступно обновление Luna' "Новая версия: $($version.latest.version)" $level
+        }elseif($version -and $version.updateAvailable -and $script:LastUpdateNoticeVersion -ne [string]$version.latest.version){
+            $script:LastUpdateNoticeVersion=[string]$version.latest.version
+            $level=if($version.mandatory){'WARN'}else{'INFO'}
+            Show-Notice 'Доступно обновление Luna' "Версия $($version.latest.version) готова к автоматической установке." $level $false 'install-update'
         }
 
         if($config.features -and $null -ne $config.features.serverApi -and -not [bool]$config.features.serverApi){
@@ -3574,6 +3734,7 @@ function Test-LunaProxyReady([int]$HttpProxyPort) {
     }catch{return $false}finally{$client.Dispose();$handler.Dispose()}
 }
 function Stop-Tunnel {
+    $wasConnected=[bool]$script:ConnectedAt
     Stop-RouteQualityCheck
     $script:RouteVpnResults=@{}
     $script:SelectedLatencyAutoGeneration=[int64]($script:SelectedLatencyAutoGeneration+1)
@@ -3589,6 +3750,7 @@ function Stop-Tunnel {
     Set-TrayStatus 'Luna VPN — нет подключения'
     $script:LatencyHistory.Clear();$LatencyLabel.Text='—';$GraphValue.Text='—';Draw-LatencyGraph
     Refresh-RouteQualityView;Update-RouteComparisonSummary
+    if($wasConnected){Add-LunaNotification 'VPN отключён' 'Защищённое соединение Luna завершено.' 'INFO'}
 }
 function Start-Tunnel {
     $core=Get-CorePath; if(-not $core){Show-Notice 'Требуется компонент' 'Сначала установите Xray-core в настройках.' 'WARN';return}
@@ -3704,6 +3866,7 @@ function Start-Tunnel {
         Set-TrayStatus "Luna VPN — подключено: $trayName"
         $StatCountry.Text="Страна: $(Get-Or $p.country 'не указана')";$StatEncryption.Text="Шифрование: $($p.protocol.ToUpper()) / $(Get-Or $p.extra.security 'none')"
         $StatIPv4.Text='Публичный IPv4: в разработке';$StatProvider.Text='Провайдер: в разработке'
+        Add-LunaNotification 'VPN подключён' "Защищённый маршрут активен: $trayName." 'SUCCESS'
         Start-ConnectionWave;Schedule-RouteQualityCheck
     }catch{$detail=$_.Exception.Message;Stop-Tunnel;Show-Notice 'Не удалось подключиться' $detail 'ERROR' $true}
 }
@@ -3895,7 +4058,25 @@ $InstallCore.Add_Click({
         Show-Notice 'Установка завершена' 'Xray-core установлен.' 'SUCCESS'
     }catch{Show-Notice 'Ошибка установки' $_.Exception.Message 'ERROR' $true}finally{Set-Loading $false}
 })
-$CloseToast.Add_Click({$script:ToastTimer.Stop();$ToastPanel.Visibility='Collapsed'})
+$CheckAppUpdateButton.Add_Click({[void](Check-LunaApplicationUpdate -Interactive)})
+$InstallAppUpdateButton.Add_Click({Install-LunaApplicationUpdate})
+$ToastActionButton.Add_Click({if($script:PendingToastAction -eq 'install-update'){Install-LunaApplicationUpdate}})
+$NotificationActionButton.Add_Click({Install-LunaApplicationUpdate})
+$NotificationBell.Add_Click({
+    $NotificationPanel.Visibility=if($NotificationPanel.Visibility -eq 'Visible'){'Collapsed'}else{'Visible'}
+    if($NotificationPanel.Visibility -eq 'Visible'){
+        foreach($item in @($State.notifications)){$item.read=$true}
+        Save-State;Refresh-NotificationCenter
+    }
+})
+$CloseNotificationPanel.Add_Click({$NotificationPanel.Visibility='Collapsed'})
+$MarkNotificationsRead.Add_Click({foreach($item in @($State.notifications)){$item.read=$true};Save-State;Refresh-NotificationCenter})
+$ClearNotifications.Add_Click({$State.notifications=@();Save-State;Refresh-NotificationCenter})
+$NotificationList.Add_SelectionChanged({
+    $item=$NotificationList.SelectedItem
+    $NotificationActionButton.Visibility=if($item -and $item.action -eq 'install-update' -and $script:BackendLatestVersion -and $script:BackendLatestVersion.updateAvailable){'Visible'}else{'Collapsed'}
+})
+$CloseToast.Add_Click({$script:ToastTimer.Stop();$script:PendingToastAction='';$ToastPanel.Visibility='Collapsed'})
 $FixButton.Add_Click({$FixButton.IsEnabled=$false;$FixButton.Content='Исправляем…';try{Stop-Tunnel;Clear-DnsClientCache -ErrorAction SilentlyContinue;Start-Sleep -Milliseconds 400;Start-Tunnel;Show-Notice 'Исправление выполнено' 'DNS-кэш очищен, ядро перезапущено и выполнено переподключение.' 'SUCCESS'}catch{Show-Notice 'Исправление не помогло' $_.Exception.Message 'ERROR'}finally{$FixButton.IsEnabled=$true;$FixButton.Content='Исправить'}})
 
 $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::FromSeconds(1)
@@ -3948,7 +4129,7 @@ $LanguageBox.Add_SelectionChanged($restartRequiredChanged);$ThemeBox.Add_Selecti
     if($ModeBox.SelectedIndex -ge 0){$State.settings.mode=if($ModeBox.SelectedIndex -eq 1){'TUN'}else{'System proxy'};$HomeModeBox.SelectedIndex=$ModeBox.SelectedIndex;$SplitScopeBox.SelectedIndex=$ModeBox.SelectedIndex;$ModeLabel.Text=$State.settings.mode}
 })
 foreach($settingToggle in @($AutoStart,$StartMinimized,$AutoConnect,$KillSwitch,$DnsProtection,$EnableIPv6,$WebRtcProtection,$DnsLeakProtection,$CheckUpdates,$AnonymousStats)){$settingToggle.Add_Click($markSettingsDirty)}
-    Initialize-ServerCatalog;Initialize-LunaAutoProfile;Refresh-CoreStatus;Refresh-Profiles;Refresh-Subscriptions;Initialize-SystemTray;Refresh-RouteQualityView;Update-RouteComparisonSummary;$timer.Start()
+    Initialize-ServerCatalog;Initialize-LunaAutoProfile;Refresh-CoreStatus;Refresh-Profiles;Refresh-Subscriptions;Initialize-SystemTray;Refresh-RouteQualityView;Update-RouteComparisonSummary;Refresh-NotificationCenter;$timer.Start()
 $script:ConsentPromptActive=$false
 $script:BackendStartupSyncDone=$false
 $script:StartHidden=$env:LUNA_START_IN_TRAY -eq '1'
@@ -3959,6 +4140,7 @@ $Window.Add_Activated({
     }
 })
 $Window.Add_ContentRendered({
+    Show-PendingUpdateResult
     $script:BackendStartupSilent=[bool]$script:StartHidden
     if($script:StartHidden){Hide-LunaToTray;$script:StartHidden=$false}
     if(-not $script:BackendStartupSyncDone){
